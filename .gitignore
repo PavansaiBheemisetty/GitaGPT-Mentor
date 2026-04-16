@@ -1,0 +1,31 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Local corpus and generated artifacts
+*.pdf
+!backend/tests/fixtures/**/*.pdf
+backend/data/raw/*
+!backend/data/raw/.gitkeep
+backend/data/processed/*
+!backend/data/processed/.gitkeep
+backend/data/index/*
+!backend/data/index/.gitkeep
+
+# Local extraction fixtures may contain copyrighted text.
+backend/data/fixtures/local/*
+!backend/data/fixtures/local/.gitkeep
