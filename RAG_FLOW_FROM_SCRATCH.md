@@ -1,4 +1,4 @@
-# GitaGPT Backend and RAG Flow: From Scratch (Teacher Style)
+# GitaGPT Backend and RAG Flow: From Scratch 
 
 This guide explains the backend like you are in 12th grade and learning from a Python teacher who wants you to truly understand, not just memorize.
 
