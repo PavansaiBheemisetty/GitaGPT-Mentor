@@ -196,7 +196,7 @@ Checks exact verse or verse ranges against recent-memory set.
 
 ---
 
-## 5.3 Generator (most important for your question)
+## 5.3 Generator (most important)
 
 File: [backend/app/rag/generator.py](backend/app/rag/generator.py)
 
