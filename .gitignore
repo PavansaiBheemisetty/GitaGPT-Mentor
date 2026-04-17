@@ -29,3 +29,8 @@ backend/data/index/*
 # Local extraction fixtures may contain copyrighted text.
 backend/data/fixtures/local/*
 !backend/data/fixtures/local/.gitkeep
+
+# Local agent instruction docs
+AGENTS.md
+CLAUDE.md
+TODOS.md
