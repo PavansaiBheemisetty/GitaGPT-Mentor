@@ -15,7 +15,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: backend   # 👈 VERY IMPORTANT
+        working-directory: backend   # 👈 IMPORTANT
 
     steps:
       - name: Checkout code
@@ -26,13 +26,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 🔥 Install your project properly (with extras)
+      # 🔥 Install dependencies (for validation only)
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[rag]"
+          pip install -r requirements.txt
 
-      # Upload everything (except unnecessary stuff)
+      # Upload backend only (cleaner)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
