@@ -37,19 +37,25 @@ jobs:
 
       - name: Prepare deployment package
         run: |
-          rm -rf deploy
-          mkdir -p deploy
-          cp -R backend deploy/
+          rm -rf deploy deploy.zip
+          mkdir -p deploy/backend
+          cp -R backend/app deploy/backend/
+          cp -R backend/data deploy/backend/
           cp startup.sh deploy/
           cp -R python_packages deploy/
           chmod +x deploy/startup.sh
+
+      - name: Archive deployment package
+        run: |
+          cd deploy
+          zip -r ../deploy.zip .
+          cd ..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: deploy-package
-          path: |
-            deploy
+          path: deploy.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -60,7 +66,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: deploy-package
-          path: deploy-package
+          path: .
+
+      - name: Inspect downloaded files
+        run: ls -lah
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -68,4 +77,4 @@ jobs:
           app-name: 'GitaGPT'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_DCB88AD507594729B1E75C90483346A8 }}
-          package: deploy-package/deploy
+          package: deploy.zip
