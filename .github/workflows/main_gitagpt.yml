@@ -26,18 +26,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 🔥 Install dependencies (for validation only)
+      # 🔥 Install dependencies into custom folder
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -t ../python_packages
 
-      # Upload backend only (cleaner)
+      # Upload entire project including installed packages
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: .
+          path: |
+            .
 
   deploy:
     runs-on: ubuntu-latest
