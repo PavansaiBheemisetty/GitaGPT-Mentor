@@ -54,7 +54,7 @@ sequenceDiagram
 
             alt llm_provider=template
                 GEN->>GEN: _template_answer()
-            else llm_provider=ollama/openai
+            else llm_provider=modal/groq/openai
                 GEN->>GEN: provider call
                 GEN->>GEN: _enforce_contract()
                 GEN->>GEN: fallback to template if invalid
@@ -85,7 +85,7 @@ flowchart LR
     F --> H[VectorStore]
     C --> I[Generator]
     I --> J[prompt builder]
-    I --> K[LLM provider: template/ollama/openai]
+    I --> K[LLM provider: template/modal/groq/openai]
     C --> L[citations]
 
     subgraph Data Files
@@ -150,8 +150,8 @@ flowchart TD
 
 ### generator.py
 
-- generate: provider switch (template/ollama/openai)
-- _ollama: local LLM call + compact retry on length
+- generate: provider switch (template/modal/groq/openai)
+- _generate_with_modal_fallback: Modal primary call + Groq fallback
 - _openai: OpenAI call with same format objective
 - _template_answer: deterministic fallback composer
 - _enforce_contract: checks structure and quality, then fallback if needed
@@ -174,7 +174,7 @@ flowchart TD
     B -->|insufficient_context warning| G[Check retrieval_min_score and query specificity]
 
     B -->|LLM unavailable| H{provider?}
-    H -->|ollama| I[Check OLLAMA_BASE_URL and server status]
+    H -->|modal| I[Check MODAL_BASE_URL, MODAL_API_KEY, and endpoint status]
     H -->|openai| J[Check OPENAI_API_KEY and model name]
 
     B -->|weird answer format| K[Inspect generator _enforce_contract fallback behavior]

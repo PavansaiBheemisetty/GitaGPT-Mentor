@@ -1,11 +1,99 @@
 import hashlib
 import re
+from typing import Awaitable, Callable
 
 import httpx
 
 from app.core.config import Settings
 from app.models.chat import RetrievedChunk
 from app.rag.prompt import SYSTEM_PROMPT, build_user_prompt
+
+
+GENERIC_WELLNESS_SUBSTITUTIONS = {
+    r"\bself-care\b": "disciplined care of body and mind in service of dharma",
+    r"\bpractice self-compassion\b": "train the mind to become an ally through disciplined self-respect",
+    r"\bbe kind to yourself\b": "do not degrade yourself; train the mind as an ally",
+    r"\bexplore hobbies\b": "observe what your nature repeatedly returns to when pressure lifts",
+    r"\bexplore your interests\b": "observe what your nature repeatedly returns to when pressure lifts",
+    r"\btry new things\b": "test aligned duties and observe what sustains steadiness",
+    r"\bbuild relationships\b": "seek sattvic association that strengthens clarity over attachment",
+    r"\bset boundaries\b": "guard the gates of the senses with discernment",
+    r"\bfind alternative activities\b": "redirect restless energy into one duty done with steadiness",
+    r"\btake a break\b": "withdraw the senses briefly, then return to duty with steadiness",
+}
+
+GENERIC_PUNCHLINE_PHRASES = {
+    "healing takes time",
+    "be kind to yourself",
+    "you are enough",
+    "everything will be okay",
+    "one step at a time",
+}
+
+PUNCHLINE_GITA_TERMS = (
+    "dharma",
+    "svadharma",
+    "atman",
+    "guna",
+    "gunas",
+    "sattva",
+    "rajas",
+    "tamas",
+    "karma",
+    "detachment",
+    "attachment",
+    "duty",
+)
+
+PROMPT_FEELING_WORDS = (
+    "you are feeling",
+    "you feel",
+    "burnout",
+    "burned out",
+    "resentment",
+    "overwhelmed",
+    "sad",
+    "lonely",
+    "anxious",
+    "depressed",
+)
+
+PUNCHLINE_LIBRARY = {
+    "anger": [
+        "Control the demand beneath anger, and the mind regains its sovereign clarity.",
+        "Anger weakens when expectation loosens and action returns to disciplined purpose.",
+    ],
+    "stress": [
+        "Pressure rules the mind only when outcomes replace duty as your center.",
+        "Steadiness is won when action stays precise and outcomes lose their tyranny.",
+    ],
+    "grief": [
+        "Loss changes form, yet the atman remains untouched by bodily ending.",
+        "Grief ripens into strength when love remains, but ownership of life dissolves.",
+    ],
+    "focus": [
+        "Attention becomes power when each return is guided by duty, not impulse.",
+        "Mastery begins when the wandering mind is recalled without irritation or pride.",
+    ],
+    "dharma": [
+        "Freedom begins when duty is chosen by nature, not borrowed from comparison.",
+        "Svadharma clarifies life when imitation is dropped and responsibility is embraced.",
+    ],
+    "attachment": [
+        "What you cling to starts commanding you; release restores intelligent action.",
+        "Detachment does not reduce love; it restores freedom inside love and action.",
+    ],
+    "failure": [
+        "Setback matures the warrior when effort stays pure and identity leaves outcomes.",
+        "Results fluctuate; disciplined karma yoga keeps your direction from collapsing.",
+    ],
+    "default": [
+        "Duty performed without ownership is the quiet architecture of unshakable freedom.",
+        "When attachment loosens, discernment returns and the mind stops bargaining with reality.",
+        "The mind becomes an ally when clarity governs impulse, not fear or praise.",
+        "Detach from applause and blame; then your work reveals its truest power.",
+    ],
+}
 
 
 class Generator:
@@ -20,31 +108,58 @@ class Generator:
         intent: str,
         theme: str,
         avoid_verses: list[str],
+        memory_context: str | None = None,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         provider = self.settings.llm_provider.lower()
         if provider == "template":
-            return _template_answer(question, chunks, intent=intent, theme=theme)
-        if provider == "ollama":
-            raw = await self._ollama(
+            answer = _template_answer(question, chunks, intent=intent, theme=theme)
+            if on_token:
+                for token in _stream_tokens(answer):
+                    await on_token(token)
+            return answer
+
+        raw: str
+        if provider == "modal":
+            raw = await self._generate_with_modal_fallback(
                 question,
                 chunks,
                 intent=intent,
                 theme=theme,
                 avoid_verses=avoid_verses,
+                memory_context=memory_context,
+                on_token=None,
             )
-            return _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
-        if provider == "openai":
+        elif provider == "groq":
+            raw = await self._groq(
+                question,
+                chunks,
+                intent=intent,
+                theme=theme,
+                avoid_verses=avoid_verses,
+                memory_context=memory_context,
+                on_token=None,
+            )
+        elif provider == "openai":
             raw = await self._openai(
                 question,
                 chunks,
                 intent=intent,
                 theme=theme,
                 avoid_verses=avoid_verses,
+                memory_context=memory_context,
+                on_token=None,
             )
-            return _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
-        raise ValueError(f"Unknown LLM provider: {self.settings.llm_provider}")
+        else:
+            raise ValueError(f"Unknown LLM provider: {self.settings.llm_provider}")
 
-    async def _ollama(
+        final_answer = _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
+        if on_token:
+            for token in _stream_tokens(final_answer):
+                await on_token(token)
+        return final_answer
+
+    async def _generate_with_modal_fallback(
         self,
         question: str,
         chunks: list[RetrievedChunk],
@@ -52,6 +167,108 @@ class Generator:
         intent: str,
         theme: str,
         avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
+    ) -> str:
+        modal_error: Exception | None = None
+        try:
+            return await self._modal(
+                question,
+                chunks,
+                intent=intent,
+                theme=theme,
+                avoid_verses=avoid_verses,
+                memory_context=memory_context,
+                on_token=on_token,
+            )
+        except Exception as exc:
+            modal_error = exc
+
+        if not self.settings.groq_api_key:
+            raise RuntimeError(
+                "Modal generation failed and GROQ_API_KEY is not configured for fallback."
+            ) from modal_error
+
+        try:
+            return await self._groq(
+                question,
+                chunks,
+                intent=intent,
+                theme=theme,
+                avoid_verses=avoid_verses,
+                memory_context=memory_context,
+                on_token=on_token,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Modal generation failed: {modal_error}. Groq fallback failed: {exc}."
+            ) from exc
+
+    async def _modal(
+        self,
+        question: str,
+        chunks: list[RetrievedChunk],
+        *,
+        intent: str,
+        theme: str,
+        avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
+    ) -> str:
+        if not self.settings.modal_api_key:
+            raise RuntimeError("MODAL_API_KEY is required for Modal generation.")
+        return await self._chat_completions_request(
+            base_url=self.settings.modal_base_url,
+            api_key=self.settings.modal_api_key,
+            model=self.settings.modal_model,
+            question=question,
+            chunks=chunks,
+            intent=intent,
+            theme=theme,
+            avoid_verses=avoid_verses,
+            memory_context=memory_context,
+            on_token=on_token,
+        )
+
+    async def _groq(
+        self,
+        question: str,
+        chunks: list[RetrievedChunk],
+        *,
+        intent: str,
+        theme: str,
+        avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
+    ) -> str:
+        if not self.settings.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is required for Groq generation.")
+        return await self._chat_completions_request(
+            base_url=self.settings.groq_base_url,
+            api_key=self.settings.groq_api_key,
+            model=self.settings.groq_model,
+            question=question,
+            chunks=chunks,
+            intent=intent,
+            theme=theme,
+            avoid_verses=avoid_verses,
+            memory_context=memory_context,
+            on_token=on_token,
+        )
+
+    async def _chat_completions_request(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        question: str,
+        chunks: list[RetrievedChunk],
+        intent: str,
+        theme: str,
+        avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         prompt = build_user_prompt(
             question,
@@ -59,57 +276,39 @@ class Generator:
             intent=intent,
             theme=theme,
             avoid_verses=avoid_verses,
+            memory_context=memory_context,
         )
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.35,
+            "max_tokens": 420,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
-                f"{self.settings.ollama_base_url}/api/chat",
-                json={
-                    "model": self.settings.ollama_model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "think": False,
-                    "options": {"temperature": 0.35, "num_predict": 360, "num_ctx": 8192},
-                },
+                url,
+                headers=headers,
+                json=payload,
             )
             response.raise_for_status()
             data = response.json()
-            content = _extract_ollama_content(data)
-            if content:
-                return content
+            content = _extract_chat_completions_content(data)
+            if not content:
+                raise RuntimeError("No assistant content returned by chat completions endpoint.")
 
-            # If the model returns no text due to prompt-length exhaustion, retry with a compact context.
-            if data.get("done_reason") == "length":
-                compact_prompt = build_user_prompt(
-                    question,
-                    chunks,
-                    intent=intent,
-                    theme=theme,
-                    avoid_verses=avoid_verses,
-                    max_chunks=4,
-                    max_chunk_chars=220,
-                )
-                retry = await client.post(
-                    f"{self.settings.ollama_base_url}/api/chat",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": compact_prompt},
-                        ],
-                        "stream": False,
-                        "think": False,
-                        "options": {"temperature": 0.35, "num_predict": 320, "num_ctx": 8192},
-                    },
-                )
-                retry.raise_for_status()
-                retry_data = retry.json()
-                retry_content = _extract_ollama_content(retry_data)
-                if retry_content:
-                    return retry_content
-
+            content = content.strip()
+            if on_token:
+                for token in _stream_tokens(content):
+                    await on_token(token)
             return content
 
     async def _openai(
@@ -120,6 +319,8 @@ class Generator:
         intent: str,
         theme: str,
         avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         if not self.settings.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY is required for OpenAI generation.")
@@ -129,23 +330,43 @@ class Generator:
             raise RuntimeError("openai package is not installed.") from exc
 
         client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_user_prompt(
+                    question,
+                    chunks,
+                    intent=intent,
+                    theme=theme,
+                    avoid_verses=avoid_verses,
+                    memory_context=memory_context,
+                ),
+            },
+        ]
+
+        if on_token:
+            stream = await client.chat.completions.create(
+                model=self.settings.openai_model,
+                temperature=0.35,
+                max_tokens=420,
+                messages=messages,
+                stream=True,
+            )
+            parts: list[str] = []
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if not delta:
+                    continue
+                parts.append(delta)
+                await on_token(delta)
+            return "".join(parts).strip()
+
         response = await client.chat.completions.create(
             model=self.settings.openai_model,
             temperature=0.35,
-            max_tokens=360,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_user_prompt(
-                        question,
-                        chunks,
-                        intent=intent,
-                        theme=theme,
-                        avoid_verses=avoid_verses,
-                    ),
-                },
-            ],
+            max_tokens=420,
+            messages=messages,
         )
         return response.choices[0].message.content or ""
 
@@ -166,23 +387,24 @@ def _template_answer(question: str, chunks: list[RetrievedChunk], *, intent: str
     first_step = _contextualize_step(bullets[0], context=context, seed=seed + 11) if real_life_mode else bullets[0]
 
     draft = (
-        "1. Direct Insight (Human Tone)\n"
+        "Direct Insight (Human Tone)\n"
         f"{insight}\n\n"
-        "2. Gita Wisdom (Verse Reference + Meaning)\n"
+        "Gita Wisdom (Verse Reference + Meaning)\n"
         f"{verse}: {profile['verse_meaning']}\n"
         f"{wisdom_meaning}\n\n"
-        "3. Why This Happens (Mechanism)\n"
+        "Why This Happens (Mechanism)\n"
         f"{mechanism}\n"
         f"{mechanism_tail}\n"
         "\n"
-        "4. Practical Reflection (Actionable Steps)\n"
+        "Practical Reflection (Actionable Steps)\n"
         f"- {first_step}\n"
         f"- {bullets[1]}\n"
         f"- {bullets[2]}\n"
         f"- {bullets[3]}\n\n"
-        f"{punchline}"
+        "Closing Line (Punchline)\n"
+        f"*{punchline}*"
     )
-    return _post_process_answer(draft, question=question)
+    return _post_process_answer(draft, question=question, theme=theme)
 
 
 def _infer_real_life_context(question: str, *, theme: str | None = None, seed: int | None = None) -> str:
@@ -198,6 +420,33 @@ def _infer_real_life_context(question: str, *, theme: str | None = None, seed: i
                 "the quiet after a loved one has passed away, where their absence feels physically real",
                 "days after losing someone dear, when memories come in strong waves",
                 "an irreversible loss where love remains but the person is no longer physically here",
+            ]
+        )
+
+    if theme == "dharma_conflict":
+        return pick(
+            [
+                "a career choice where duty and calling do not point to the same place",
+                "a family or workplace decision where approval pulls against your own nature",
+                "a crossroads where the responsible path and the truest path are not identical",
+            ]
+        )
+
+    if theme == "ego_conflict":
+        return pick(
+            [
+                "a conflict where the need to win is quietly shaping the reaction",
+                "a moment after comparison or criticism has made pride flare up",
+                "a situation where recognition matters more than the actual work",
+            ]
+        )
+
+    if theme == "attachment":
+        return pick(
+            [
+                "a moment when the fear of losing success, love, or approval is constant",
+                "a period where the mind keeps gripping an outcome as if it were identity itself",
+                "a day when clinging is making even good things feel fragile",
             ]
         )
 
@@ -350,64 +599,125 @@ def _enforce_contract(
     intent: str,
     theme: str,
 ) -> str:
-    text = answer.strip()
+    text = _normalize_section_headings(answer.strip())
     if not text:
         return _template_answer(question, chunks, intent=intent, theme=theme)
 
     headings = [
-        "1. Direct Insight (Human Tone)",
-        "2. Gita Wisdom (Verse Reference + Meaning)",
-        "3. Why This Happens (Mechanism)",
-        "4. Practical Reflection (Actionable Steps)",
+        "Direct Insight (Human Tone)",
+        "Gita Wisdom (Verse Reference + Meaning)",
+        "Why This Happens (Mechanism)",
+        "Practical Reflection (Actionable Steps)",
+        "Closing Line (Punchline)",
     ]
 
     current_index = 0
     for heading in headings:
         found = text.find(heading, current_index)
         if found == -1:
-            return _template_answer(question, chunks, intent=intent, theme=theme)
+            return _post_process_answer(text, question=question, theme=theme)
         current_index = found + len(heading)
 
     words = len(text.replace("\n", " ").split())
-    if words < 130 or words > 260:
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+    if words < 100 or words > 360:
+        return _post_process_answer(text, question=question, theme=theme)
+
+    if "**" in text:
+        return _post_process_answer(text, question=question, theme=theme)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return _template_answer(question, chunks, intent=intent, theme=theme)
-    if lines[-1].startswith("-") or lines[-1].startswith("*") or lines[-1].startswith("4."):
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+    if lines[-1].lower().startswith("closing line"):
+        return _post_process_answer(text, question=question, theme=theme)
 
     sections = _extract_sections(text)
     if sections is None:
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme)
 
     real_life_mode = _is_real_life_query(intent=intent, theme=theme)
 
     if real_life_mode and not _is_theme_mechanism_valid(theme, sections["mechanism"]):
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme)
 
     if real_life_mode and not _has_real_life_context(sections["practical"]):
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme)
 
     if real_life_mode and not _is_theme_action_valid(theme, sections["practical"]):
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme)
 
-    section_four_start = text.find("4. Practical Reflection (Actionable Steps)")
-    if section_four_start == -1:
-        return _template_answer(question, chunks, intent=intent, theme=theme)
-    practical_block = text[section_four_start:]
+    section_four_start = text.find("Practical Reflection (Actionable Steps)")
+    section_five_start = text.find("Closing Line (Punchline)")
+    if section_four_start == -1 or section_five_start == -1 or section_five_start <= section_four_start:
+        return _post_process_answer(text, question=question, theme=theme)
+    practical_block = text[section_four_start:section_five_start]
     bullet_count = sum(1 for line in practical_block.splitlines() if _is_bullet_line(line))
-    if bullet_count < 3 or bullet_count > 4:
-        return _template_answer(question, chunks, intent=intent, theme=theme)
+    if bullet_count < 3 or bullet_count > 5:
+        return _post_process_answer(text, question=question, theme=theme)
 
-    return _post_process_answer(text, question=question)
+    closing = sections.get("closing", "").strip()
+    if not closing or "\n" in closing:
+        return _post_process_answer(text, question=question, theme=theme)
+    if closing.lower().startswith("closing"):
+        return _post_process_answer(text, question=question, theme=theme)
+    if not _is_italic_line(closing):
+        return _post_process_answer(text, question=question, theme=theme)
+
+    return _post_process_answer(text, question=question, theme=theme)
 
 
-def _extract_ollama_content(payload: dict) -> str:
-    message = payload.get("message", {})
-    content = str(message.get("content", "") or "").strip()
-    return content
+def _normalize_section_headings(text: str) -> str:
+    updated = text
+    patterns = [
+        (
+            r"^\s*[-*•#]*\s*(?:1[\).]?\s*)?direct\s+insight(?:\s*\(human\s+tone\))?\s*[:.]?\s*$",
+            "Direct Insight (Human Tone)",
+        ),
+        (
+            r"^\s*[-*•#]*\s*(?:2[\).]?\s*)?(?:gita\s+wisdom|wisdom)"
+            r"(?:\s*\(verse\s+reference\s*\+\s*meaning\))?\s*[:.]?\s*$",
+            "Gita Wisdom (Verse Reference + Meaning)",
+        ),
+        (
+            r"^\s*[-*•#]*\s*(?:3[\).]?\s*)?why\s+this\s+happens(?:\s*\(mechanism\))?\s*[:.]?\s*$",
+            "Why This Happens (Mechanism)",
+        ),
+        (
+            r"^\s*[-*•#]*\s*(?:4[\).]?\s*)?practical\s+reflection"
+            r"(?:\s*\(actionable\s+steps\))?\s*[:.]?\s*$",
+            "Practical Reflection (Actionable Steps)",
+        ),
+        (
+            r"^\s*[-*•#]*\s*(?:5[\).]?\s*)?closing\s+line(?:\s*\(punchline\))?\s*[:.]?\s*$",
+            "Closing Line (Punchline)",
+        ),
+    ]
+
+    for pattern, replacement in patterns:
+        updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE | re.MULTILINE)
+    return updated
+
+
+def _extract_chat_completions_content(payload: dict) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return str(message.get("content", "") or "")
+
+
+def _stream_tokens(text: str) -> list[str]:
+    words = text.split(" ")
+    tokens: list[str] = []
+    for index, word in enumerate(words):
+        suffix = " " if index < len(words) - 1 else ""
+        tokens.append(f"{word}{suffix}")
+    return tokens
 
 
 def _contextualize_step(step: str, *, context: str, seed: int) -> str:
@@ -435,11 +745,127 @@ def _clean_anchor_excerpt(chunks: list[RetrievedChunk], *, max_chars: int) -> st
     return ""
 
 
-def _post_process_answer(text: str, *, question: str) -> str:
-    polished = _normalize_repetitive_context_phrase(text, question=question)
+def _post_process_answer(text: str, *, question: str, theme: str | None = None) -> str:
+    polished = _normalize_section_headings(text)
+    polished = _strip_malformed_asterisk_prefixes(polished)
+    # Global cleanup of malformed markdown artifacts like "**." or "*."
+    polished = re.sub(r'\*{1,3}\.(?:\s|$)', '', polished)
+    polished = re.sub(r'^\s*\*{2,3}\s*$', '', polished, flags=re.MULTILINE)
+    polished = _normalize_repetitive_context_phrase(polished, question=question)
+    polished = _replace_generic_wellness_language(polished)
+    polished = _correct_guna_state_mislabels(polished, question=question)
     polished = _normalize_bullets(polished)
+    polished = _strip_punchline_label(polished)
+    polished = _normalize_closing_line(polished)
     polished = _strip_anchor_lines(polished)
+    polished = _rebuild_five_section_output(polished, question=question, theme=theme)
     return polished
+
+
+def _rebuild_five_section_output(text: str, *, question: str, theme: str | None) -> str:
+    sections = _extract_sections(text)
+    if sections is None:
+        return text
+
+    insight = _compact_line_block(sections["insight"])
+    wisdom = _normalize_wisdom_section(_compact_line_block(sections["wisdom"]), question=question)
+    mechanism = _compact_line_block(sections["mechanism"])
+    practical = _normalize_practical_steps(sections["practical"])
+    closing = _normalize_closing_phrase(
+        sections["closing"],
+        previous_sections=[insight, wisdom, mechanism, practical],
+        question=question,
+        theme=theme,
+    )
+
+    return (
+        "Direct Insight (Human Tone)\n"
+        f"{insight}\n\n"
+        "Gita Wisdom (Verse Reference + Meaning)\n"
+        f"{wisdom}\n\n"
+        "Why This Happens (Mechanism)\n"
+        f"{mechanism}\n\n"
+        "Practical Reflection (Actionable Steps)\n"
+        f"{practical}\n\n"
+        "Closing Line (Punchline)\n"
+        f"{closing}"
+    ).strip()
+
+
+def _compact_line_block(text: str) -> str:
+    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "Act from clarity, not from panic."
+    return "\n".join(lines)
+
+
+def _normalize_practical_steps(text: str) -> str:
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    candidates: list[str] = []
+
+    for line in raw_lines:
+        if line.lower().startswith("closing line"):
+            continue
+        if _is_bullet_line(line):
+            step = re.sub(r"^\s*(?:[-*•]|\d+\.)\s*", "", line).strip()
+            if step:
+                candidates.append(step)
+            continue
+        if line.startswith("*") and line.endswith("*"):
+            continue
+        # Split long plain text into sentence-like actions when bullets are missing.
+        sentence_parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", line) if part.strip()]
+        candidates.extend(sentence_parts if sentence_parts else [line])
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = " ".join(item.split()).strip("-• ")
+        normalized = _rewrite_generic_practical_step(normalized)
+        if not normalized or normalized == ".":
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        cleaned.append(normalized)
+
+    fallbacks = [
+        "Practice indriya nigraha by withdrawing from one recurring trigger for the next day.",
+        "Perform one duty as karma yoga without bargaining for immediate results.",
+        "Observe the mind's guna pattern before action and choose the sattvic response.",
+        "Release outcome-fixation by measuring steadiness of action, not applause or blame.",
+    ]
+
+    while len(cleaned) < 3:
+        cleaned.append(fallbacks[len(cleaned)])
+
+    cleaned = cleaned[:5]
+
+    bullets: list[str] = []
+    for item in cleaned:
+        sentence = _capitalize_first_alpha(item)
+        if sentence[-1] not in ".!?":
+            sentence += "."
+        bullets.append(f"- {sentence}")
+    return "\n".join(bullets)
+
+
+def _normalize_closing_phrase(
+    text: str,
+    *,
+    previous_sections: list[str],
+    question: str,
+    theme: str | None,
+) -> str:
+    compact = " ".join(text.replace("\n", " ").split())
+    candidate = _clean_punchline(compact)
+    sentence = _first_sentence(candidate)
+
+    if _should_regenerate_punchline(sentence, previous_sections):
+        sentence = _generate_new_punchline(question=question, theme=theme, previous_sections=previous_sections)
+
+    return f"*{sentence}*"
 
 
 def _normalize_repetitive_context_phrase(text: str, *, question: str) -> str:
@@ -465,8 +891,7 @@ def _normalize_bullets(text: str) -> str:
             continue
 
         body = re.sub(r"^\s*(?:[-*•]|\d+\.)\s*", "", line).strip()
-        if not body:
-            normalized_lines.append("-")
+        if not body or body in {".", "-", "*", "•"}:
             continue
         body = _capitalize_first_alpha(body)
         if body[-1] not in ".!?":
@@ -483,6 +908,361 @@ def _strip_anchor_lines(text: str) -> str:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
+
+
+def _strip_punchline_label(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
+            continue
+        if stripped.lower().startswith("closing punchline"):
+            remainder = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+            if remainder:
+                cleaned_lines.append(remainder)
+            continue
+        if stripped.lower().startswith("closing line") and ":" in stripped:
+            remainder = stripped.split(":", 1)[1].strip()
+            if remainder:
+                cleaned_lines.append(remainder)
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
+def _normalize_closing_line(text: str) -> str:
+    lines = text.splitlines()
+    heading = "Closing Line (Punchline)"
+
+    if heading not in text:
+        trailing = ""
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _is_bullet_line(stripped):
+                continue
+            if stripped in {
+                "Direct Insight (Human Tone)",
+                "Gita Wisdom (Verse Reference + Meaning)",
+                "Why This Happens (Mechanism)",
+                "Practical Reflection (Actionable Steps)",
+            }:
+                continue
+            trailing = stripped
+            break
+        punchline = _clean_punchline(trailing) if trailing else "Duty performed without ownership is the quiet architecture of unshakable freedom."
+        return text.rstrip() + f"\n\n{heading}\n*{punchline}*"
+
+    if heading in lines:
+        idx = lines.index(heading)
+        closing_text = ""
+        for i in range(idx + 1, len(lines)):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue
+            closing_text = stripped
+            break
+    else:
+        # Handle malformed inline form: "... Closing Line (Punchline) text"
+        tail = text.split(heading, 1)[1].strip() if heading in text else ""
+        closing_text = tail.splitlines()[0].strip() if tail else ""
+
+    punchline = _clean_punchline(closing_text) if closing_text else "Duty performed without ownership is the quiet architecture of unshakable freedom."
+    normalized_lines = [line for line in lines if line.strip() and line.strip() != heading]
+    normalized_lines.append(heading)
+    normalized_lines.append(f"*{punchline}*")
+    return "\n".join(normalized_lines).rstrip()
+
+
+def _clean_punchline(text: str) -> str:
+    stripped = text.strip()
+    stripped = re.sub(r"^\*+|\*+$", "", stripped).strip()
+    stripped = re.sub(r"^_+|_+$", "", stripped).strip()
+    # Strip malformed marker artifacts like "**.", "*."
+    stripped = re.sub(r"\*{1,3}\.\s*", "", stripped).strip()
+    if stripped.lower().startswith("closing line") and ":" in stripped:
+        stripped = stripped.split(":", 1)[1].strip()
+    if stripped.lower().startswith("closing punchline") and ":" in stripped:
+        stripped = stripped.split(":", 1)[1].strip()
+    stripped = _first_sentence(stripped)
+    if not stripped:
+        return ""
+    if stripped[-1] not in ".!?":
+        stripped += "."
+    # Reject truncated punchlines under 10 words
+    word_count = len(re.findall(r"[A-Za-z']+", stripped))
+    if word_count < 5:
+        return ""
+    return stripped
+
+
+def _first_sentence(text: str) -> str:
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return parts[0].strip()
+
+
+def _replace_generic_wellness_language(text: str) -> str:
+    updated = text
+    for pattern, replacement in GENERIC_WELLNESS_SUBSTITUTIONS.items():
+        updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
+    return updated
+
+
+def _strip_malformed_asterisk_prefixes(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
+            continue
+
+        if _is_italic_line(stripped):
+            cleaned_lines.append(line)
+            continue
+
+        normalized = re.sub(r"^\s*\*{1,3}\s*[.:]\s*", "", line)
+        normalized = re.sub(r"^\s*\*{2,3}\s+(?=\S)", "", normalized)
+        normalized = re.sub(r"\s+\*{2,3}\s*$", "", normalized)
+        if normalized.strip() in {"", ".", "*", "**", "***", "-", "•", "**.", "*."}:
+            continue
+        cleaned_lines.append(normalized)
+
+    return "\n".join(cleaned_lines)
+
+
+def _correct_guna_state_mislabels(text: str, *, question: str) -> str:
+    lowered_question = question.lower()
+    has_tamasic_signals = any(
+        token in lowered_question
+        for token in ("numb", "numbness", "apat", "empty", "dull", "stuck", "going through the motions")
+    )
+
+    corrected_lines: list[str] = []
+    for line in text.splitlines():
+        lowered_line = line.lower()
+        line_has_tamasic_signals = any(
+            token in lowered_line
+            for token in ("numb", "numbness", "apat", "going through the motions", "inertia", "letharg", "dull")
+        )
+        explicit_misdiagnosis = bool(
+            re.search(r"\b(this|that|your|the)\b.{0,40}\b(is|means|reflects|shows)\b.{0,20}\bsattv", lowered_line)
+            or re.search(r"\bin\s+sattva\b", lowered_line)
+            or re.search(r"\bstate\s+of\s+sattva\b", lowered_line)
+        )
+        should_correct = line_has_tamasic_signals and ("sattva" in lowered_line or "sattvic" in lowered_line)
+        should_correct = should_correct or (
+            has_tamasic_signals and explicit_misdiagnosis and ("sattva" in lowered_line or "sattvic" in lowered_line)
+        )
+
+        if should_correct:
+            updated = re.sub(r"\bsattva\b", "tamas (often with suppressed rajas)", line, flags=re.IGNORECASE)
+            updated = re.sub(r"\bsattvic\b", "tamasic", updated, flags=re.IGNORECASE)
+            corrected_lines.append(updated)
+            continue
+        corrected_lines.append(line)
+    return "\n".join(corrected_lines)
+
+
+def _rewrite_generic_practical_step(step: str) -> str:
+    if not step:
+        return ""
+    rewritten = _replace_generic_wellness_language(step).strip()
+    lowered = rewritten.lower()
+    if lowered in {".", "-", "*", "•"}:
+        return ""
+
+    if "self-care" in lowered or "kind to yourself" in lowered:
+        return "Stabilize body and mind as instruments of dharma through disciplined routine"
+    if "explore hobbies" in lowered or "explore your interests" in lowered or "try new things" in lowered:
+        return "Observe what your nature repeatedly returns to when external pressure is removed"
+    if "build relationships" in lowered:
+        return "Choose sattvic association that strengthens clarity rather than attachment"
+    return rewritten
+
+
+def _normalize_wisdom_section(text: str, *, question: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return (
+            "BG 2.47: You govern action, never the total field of outcomes.\n"
+            f"This applies here because {_derive_problem_clause(question)}"
+        )
+
+    verse_line = next((line for line in lines if "bg" in line.lower()), lines[0])
+    explanation_lines = [line for line in lines if line != verse_line]
+    explanation = " ".join(explanation_lines).strip()
+
+    if not explanation:
+        explanation = f"This applies here because {_derive_problem_clause(question)}"
+    elif not _is_directly_applicative(explanation):
+        explanation = f"{explanation} This applies here because {_derive_problem_clause(question)}"
+
+    explanation = _capitalize_first_alpha(explanation)
+    if explanation[-1] not in ".!?":
+        explanation += "."
+
+    return f"{verse_line}\n{explanation}"
+
+
+def _is_directly_applicative(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in ("this applies", "here because", "in your case", "because"))
+
+
+def _derive_problem_clause(question: str) -> str:
+    lowered = question.lower()
+    if any(token in lowered for token in ("anger", "rage", "frustrat")):
+        return "anger rises when expectation hardens into demand and obscures discernment."
+    if any(token in lowered for token in ("stress", "pressure", "deadline", "anxious", "anxiety")):
+        return "pressure intensifies when attention clings to outcomes beyond your control."
+    if any(token in lowered for token in ("grief", "loss", "died", "death", "passed away")):
+        return "grief deepens when love meets irreversible physical absence."
+    if any(token in lowered for token in ("focus", "distract", "procrast")):
+        return "attention weakens when impulses outrank disciplined return to duty."
+    if any(token in lowered for token in ("compare", "jealous", "validation", "approval")):
+        return "comparison converts another person's path into your measure of self-worth."
+    if any(token in lowered for token in ("failure", "rejected", "setback")):
+        return "setback feels existential when identity is fused with visible results."
+    if any(token in lowered for token in ("dharma", "duty", "career", "purpose")):
+        return "inner conflict grows when svadharma is traded for borrowed expectations."
+    return "attachment and outcome-fear disturb clear action in the present moment."
+
+
+def _should_regenerate_punchline(sentence: str, previous_sections: list[str]) -> bool:
+    if not sentence:
+        return True
+    lowered = sentence.lower().strip().rstrip(".!?")
+    if lowered in GENERIC_PUNCHLINE_PHRASES:
+        return True
+    if any(token in lowered for token in PROMPT_FEELING_WORDS):
+        return True
+    if not _is_gita_grounded_punchline(lowered, previous_sections):
+        return True
+    word_count = len(re.findall(r"[A-Za-z']+", sentence))
+    if word_count < 10 or word_count > 16:
+        return True
+    if _punchline_repeats_previous(sentence, previous_sections):
+        return True
+    return False
+
+
+def _punchline_repeats_previous(sentence: str, previous_sections: list[str]) -> bool:
+    normalized_sentence = _normalize_compare_text(sentence)
+    if not normalized_sentence:
+        return True
+
+    previous_text = " ".join(previous_sections)
+    normalized_previous = _normalize_compare_text(previous_text)
+    # Exact substring match
+    if normalized_sentence in normalized_previous:
+        return True
+
+    sentence_words = [word for word in re.findall(r"[a-z]+", normalized_sentence) if len(word) > 2]
+    if not sentence_words:
+        return True
+
+    sentence_word_set = set(sentence_words)
+
+    # Build bigrams from punchline for phrase-level repetition detection
+    sentence_bigrams = {
+        f"{sentence_words[i]} {sentence_words[i + 1]}"
+        for i in range(len(sentence_words) - 1)
+    }
+
+    for previous_sentence in re.split(r"(?<=[.!?])\s+", previous_text):
+        prev_words = [word for word in re.findall(r"[a-z]+", previous_sentence.lower()) if len(word) > 2]
+        if not prev_words:
+            continue
+        prev_word_set = set(prev_words)
+
+        # Unigram overlap: 35% of punchline content words shared → reject
+        overlap = len(sentence_word_set & prev_word_set)
+        if overlap >= max(3, int(len(sentence_word_set) * 0.35)):
+            return True
+
+        # Bigram overlap: 3+ shared word-pairs → reject (catches paraphrasing)
+        prev_bigrams = {
+            f"{prev_words[i]} {prev_words[i + 1]}"
+            for i in range(len(prev_words) - 1)
+        }
+        bigram_overlap = len(sentence_bigrams & prev_bigrams)
+        if bigram_overlap >= 3:
+            return True
+
+    return False
+
+
+def _is_gita_grounded_punchline(lowered_sentence: str, previous_sections: list[str]) -> bool:
+    if any(term in lowered_sentence for term in PUNCHLINE_GITA_TERMS):
+        return True
+
+    combined = " ".join(previous_sections).lower()
+    # If earlier sections are strongly Gita-framed, allow concise punchline without explicit jargon.
+    strong_gita_context = sum(1 for term in PUNCHLINE_GITA_TERMS if term in combined) >= 3
+    return strong_gita_context and any(token in lowered_sentence for token in ("clarity", "discernment", "freedom", "steadiness"))
+
+
+def _normalize_compare_text(text: str) -> str:
+    lowered = text.lower()
+    lowered = re.sub(r"[^a-z0-9\s]", "", lowered)
+    return " ".join(lowered.split())
+
+
+def _generate_new_punchline(*, question: str, theme: str | None, previous_sections: list[str]) -> str:
+    key = _punchline_theme_key(question=question, theme=theme)
+    candidates = list(PUNCHLINE_LIBRARY.get(key, [])) + PUNCHLINE_LIBRARY["default"]
+    seed = _stable_index(question, f"punchline:{key}")
+
+    for offset in range(len(candidates)):
+        candidate = candidates[(seed + offset) % len(candidates)]
+        cleaned = _clean_punchline(candidate)
+        if _should_regenerate_punchline(cleaned, previous_sections):
+            continue
+        return cleaned
+
+    _FALLBACK_PUNCHLINES = [
+        "Duty performed with detachment steadies the mind and reveals dharma with precision.",
+        "Freedom is not absence of action but action freed from the tyranny of results.",
+        "The warrior who sees clearly acts with force; the doubter acts with noise.",
+        "Svadharma is not comfort — it is the one path your nature cannot honestly abandon.",
+    ]
+    fallback_seed = _stable_index(question, "punchline:fallback")
+    return _FALLBACK_PUNCHLINES[fallback_seed % len(_FALLBACK_PUNCHLINES)]
+
+
+def _punchline_theme_key(*, question: str, theme: str | None) -> str:
+    lowered = question.lower()
+    if theme in {"anger", "stress", "grief_loss", "focus", "dharma_conflict", "attachment", "failure"}:
+        if theme == "grief_loss":
+            return "grief"
+        if theme == "dharma_conflict":
+            return "dharma"
+        return theme
+    if any(token in lowered for token in ("anger", "rage", "frustrat")):
+        return "anger"
+    if any(token in lowered for token in ("stress", "pressure", "deadline", "anxiety")):
+        return "stress"
+    if any(token in lowered for token in ("grief", "loss", "death", "passed away")):
+        return "grief"
+    if any(token in lowered for token in ("focus", "distract", "procrast")):
+        return "focus"
+    if any(token in lowered for token in ("dharma", "duty", "calling")):
+        return "dharma"
+    if any(token in lowered for token in ("attach", "cling", "outcome")):
+        return "attachment"
+    if any(token in lowered for token in ("fail", "rejected", "setback")):
+        return "failure"
+    return "default"
+
+
+def _is_italic_line(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 3 and stripped.startswith("*") and stripped.endswith("*") and not stripped.startswith("**")
 
 
 def _capitalize_first_alpha(text: str) -> str:
@@ -511,6 +1291,10 @@ def _pick_verse(chunks: list[RetrievedChunk], preferred_verses: set[str], defaul
 
 def _is_real_life_query(*, intent: str, theme: str) -> bool:
     real_life_intents = {
+        "existential",
+        "dharma_conflict",
+        "ego_conflict",
+        "attachment",
         "grief_loss",
         "emotional_low",
         "emotional_high",
@@ -523,6 +1307,10 @@ def _is_real_life_query(*, intent: str, theme: str) -> bool:
         "focus",
     }
     real_life_themes = {
+        "existential",
+        "dharma_conflict",
+        "ego_conflict",
+        "attachment",
         "grief_loss",
         "emotional_low",
         "emotional_high",
@@ -578,6 +1366,210 @@ def _peace_subtheme(question: str) -> str:
 
 def _theme_profile(theme: str, *, question: str | None = None) -> dict:
     profiles = {
+        "existential": {
+            "preferred_verses": {"2.20", "2.47", "6.5", "18.66"},
+            "default_verse": "2.20",
+            "verse_meaning": "The deeper self is not destroyed by the body, so suffering and death do not erase meaning.",
+            "anchor_fallback": "existential pain grows when suffering is treated as proof that life has no meaning",
+            "insights": [
+                "This question is not a detour; it is one of the Gita's centerlines.",
+                "When life feels broken, the mind is asking whether value can survive suffering.",
+                "The pain is real, but the conclusion that life is meaningless is not the only truth available.",
+            ],
+            "wisdom_meanings": [
+                "The Gita answers by widening identity: what is deepest in you is not erased by pain, fear, or death.",
+                "This teaching does not deny suffering; it refuses to let suffering define the totality of existence.",
+                "Its invitation is to keep acting even when certainty is gone, because meaning grows through right relationship to duty.",
+            ],
+            "mechanisms": [
+                "Existential collapse happens when pain starts speaking as if it were the final verdict on reality.",
+                "The mind turns uncertainty into nihilism when it cannot yet distinguish feeling from truth.",
+                "Meaning feels absent when identity is tied only to temporary outcomes.",
+            ],
+            "mechanism_tails": [
+                "That is why the Gita responds with both ontology and action.",
+                "The cure is not denial; it is a wider frame and one honest next step.",
+                "When identity is steady, suffering stops claiming the whole sky.",
+            ],
+            "action_sets": [
+                [
+                    "name the question honestly instead of hiding it under distraction.",
+                    "return to one duty that can be done today without needing certainty first.",
+                    "sit with the thought for a minute without turning it into a verdict.",
+                    "choose one small act that affirms life rather than merely analyzing it.",
+                ],
+                [
+                    "write the question in plain words and remove the drama around it.",
+                    "separate what hurts from what is true.",
+                    "do one grounding act that reminds you you are still participating in life.",
+                    "finish with one responsibility you can carry cleanly tonight.",
+                ],
+                [
+                    "pause before seeking answers from noise or comparison.",
+                    "hold the question as a serious one, not a shameful one.",
+                    "stay with one practice that keeps you rooted in action.",
+                    "let the next step be small, but unmistakably alive.",
+                ],
+            ],
+            "punchlines": [
+                "Meaning is not cancelled by suffering.",
+                "A broken moment is not a broken reality.",
+                "Keep acting until the horizon widens.",
+            ],
+        },
+        "dharma_conflict": {
+            "preferred_verses": {"3.35", "18.47", "2.31", "18.41"},
+            "default_verse": "3.35",
+            "verse_meaning": "Better to follow your own nature imperfectly than to imitate another's path perfectly.",
+            "anchor_fallback": "duty confusion sharpens when borrowed expectations drown out your own nature",
+            "insights": [
+                "This is not just career confusion; it is a question of alignment.",
+                "When duty and calling split, the mind suffers because it cannot tell obedience from integrity.",
+                "Your path is not found by comparison; it is found by honest contact with your own nature.",
+            ],
+            "wisdom_meanings": [
+                "The Gita says svadharma matters more than imitation because a borrowed path can look correct while hollowing you out.",
+                "This verse is not an excuse for impulsiveness; it is a call to discern what fits your nature and responsibility.",
+                "The right path is often the one that asks for courage, restraint, and long-term integrity.",
+            ],
+            "mechanisms": [
+                "Conflict grows when external standards replace inward discernment.",
+                "The mind becomes unstable when every option is measured only by social approval.",
+                "Borrowed goals create inner friction because they divide effort from meaning.",
+            ],
+            "mechanism_tails": [
+                "That is why the Gita keeps returning to duty, nature, and clear action.",
+                "When the path is owned, pressure becomes simpler to bear.",
+                "Clarity begins when imitation ends.",
+            ],
+            "action_sets": [
+                [
+                    "write the two competing paths and the cost of each in plain language.",
+                    "separate what you truly value from what would merely impress others.",
+                    "ask which choice lets you sleep with a cleaner conscience.",
+                    "take one concrete step toward the path that feels truer, even if slower.",
+                ],
+                [
+                    "identify where duty is real and where fear is speaking as duty.",
+                    "compare the options against your nature, not the loudest opinion.",
+                    "speak with one person who understands your work and character.",
+                    "choose the next responsible action instead of waiting for perfect certainty.",
+                ],
+                [
+                    "list what you are trying to prove and to whom.",
+                    "remove any option that is only there to avoid discomfort.",
+                    "look for the choice that is harder but more aligned.",
+                    "treat clarity as something earned through honest action, not endless rumination.",
+                ],
+            ],
+            "punchlines": [
+                "Borrowed paths are polished, not necessarily true.",
+                "Your nature is not a compromise; it is the map.",
+                "Own the duty that fits your life.",
+            ],
+        },
+        "ego_conflict": {
+            "preferred_verses": {"2.47", "3.27", "12.13", "16.13"},
+            "default_verse": "2.47",
+            "verse_meaning": "You control the action, not the reward, so ego cannot claim ownership of the result.",
+            "anchor_fallback": "ego tightens when success, comparison, or resentment becomes identity",
+            "insights": [
+                "The wound here is often not the event itself, but the story that your worth was challenged.",
+                "Ego conflict turns a single moment into a referendum on identity.",
+                "When winning becomes necessary, every setback starts feeling personal.",
+            ],
+            "wisdom_meanings": [
+                "The Gita loosens ego by separating action from possession: you do the work, but you do not own the universe's verdict.",
+                "This is how resentment loses power: identity stops depending on being above others.",
+                "Humility here is not weakness; it is freedom from the need to constantly defend the self.",
+            ],
+            "mechanisms": [
+                "Comparison narrows the mind until every other person becomes a mirror for self-worth.",
+                "Resentment grows when the ego believes it was denied what it deserved.",
+                "The need to win converts ordinary friction into identity threat.",
+            ],
+            "mechanism_tails": [
+                "That is why the same event can feel small to one mind and humiliating to another.",
+                "What is defended as pride often hides vulnerability.",
+                "The mind gets lighter when it stops carrying its own throne.",
+            ],
+            "action_sets": [
+                [
+                    "notice the exact comparison that is triggering the heat.",
+                    "separate what happened from what your ego says it means.",
+                    "choose one response that is dignified instead of retaliatory.",
+                    "put attention back on action, not on being seen as superior.",
+                ],
+                [
+                    "pause before defending the self-image.",
+                    "name the resentment without obeying it.",
+                    "return to a concrete duty that does not need applause.",
+                    "practice letting worth rest in steadiness rather than dominance.",
+                ],
+                [
+                    "reduce the moment to facts, not status drama.",
+                    "say less, observe more, and respond from clarity.",
+                    "spend one minute reflecting on what part of this is about pride.",
+                    "end by doing one useful action that has no audience.",
+                ],
+            ],
+            "punchlines": [
+                "The self is larger than the insult.",
+                "Win the mind, and the argument shrinks.",
+                "A quiet ego leaves more room for truth.",
+            ],
+        },
+        "attachment": {
+            "preferred_verses": {"2.62", "2.63", "2.70", "5.29"},
+            "default_verse": "2.62",
+            "verse_meaning": "Attachment narrows the mind until fear and craving disturb judgment and peace.",
+            "anchor_fallback": "attachment makes the heart interpret loss as identity collapse",
+            "insights": [
+                "Attachment is not love itself; it is the fear that love or success is what keeps you whole.",
+                "When the mind clings, even good things become sources of anxiety.",
+                "What you fear losing can quietly start controlling how you live.",
+            ],
+            "wisdom_meanings": [
+                "The Gita's detachment is not indifference; it is a way of seeing clearly without being owned by what changes.",
+                "When attachment loosens, the mind can care deeply without collapsing into fear.",
+                "This is where pratyahara begins in practice: the senses stop dragging the self around.",
+            ],
+            "mechanisms": [
+                "Fear of loss creates vigilance, and vigilance makes the mind smaller.",
+                "Attachment fuses identity with outcomes, so change feels like self-erasure.",
+                "Craving turns ordinary uncertainty into emotional captivity.",
+            ],
+            "mechanism_tails": [
+                "That is why even success can feel heavy when the heart cannot release it.",
+                "Peace returns when caring stops becoming clinging.",
+                "The tighter the grip, the less freedom remains to see clearly.",
+            ],
+            "action_sets": [
+                [
+                    "notice what you are afraid to lose and name it plainly.",
+                    "separate care from clinging by returning to breath and posture.",
+                    "do one small task without checking for reassurance.",
+                    "practice letting one outcome remain uncertain for tonight.",
+                ],
+                [
+                    "observe how often the mind asks for confirmation.",
+                    "replace the urge to secure everything with one steady responsibility.",
+                    "reduce one habit of compulsive checking or reassurance-seeking.",
+                    "end the day by honoring what you value without gripping it.",
+                ],
+                [
+                    "name the story that says you cannot be okay if this changes.",
+                    "let one attachment go unanswered for a little while.",
+                    "return attention to the task in front of you.",
+                    "practice release as a discipline, not as a mood.",
+                ],
+            ],
+            "punchlines": [
+                "What you hold too tightly starts holding you.",
+                "Care without clinging is strength.",
+                "Release makes room for peace.",
+            ],
+        },
         "grief_loss": {
             "preferred_verses": {"2.13", "2.20"},
             "default_verse": "2.13",
@@ -1243,27 +2235,30 @@ def _theme_profile(theme: str, *, question: str | None = None) -> dict:
 
 def _extract_sections(text: str) -> dict[str, str] | None:
     headings = {
-        "insight": "1. Direct Insight (Human Tone)",
-        "wisdom": "2. Gita Wisdom (Verse Reference + Meaning)",
-        "mechanism": "3. Why This Happens (Mechanism)",
-        "practical": "4. Practical Reflection (Actionable Steps)",
+        "insight": "Direct Insight (Human Tone)",
+        "wisdom": "Gita Wisdom (Verse Reference + Meaning)",
+        "mechanism": "Why This Happens (Mechanism)",
+        "practical": "Practical Reflection (Actionable Steps)",
+        "closing": "Closing Line (Punchline)",
     }
     try:
         i1 = text.index(headings["insight"])
         i2 = text.index(headings["wisdom"])
         i3 = text.index(headings["mechanism"])
         i4 = text.index(headings["practical"])
+        i5 = text.index(headings["closing"])
     except ValueError:
         return None
 
-    if not (i1 < i2 < i3 < i4):
+    if not (i1 < i2 < i3 < i4 < i5):
         return None
 
     return {
         "insight": text[i1 + len(headings["insight"]):i2].strip(),
         "wisdom": text[i2 + len(headings["wisdom"]):i3].strip(),
         "mechanism": text[i3 + len(headings["mechanism"]):i4].strip(),
-        "practical": text[i4 + len(headings["practical"]):].strip(),
+        "practical": text[i4 + len(headings["practical"]):i5].strip(),
+        "closing": text[i5 + len(headings["closing"]):].strip(),
     }
 
 
@@ -1306,8 +2301,7 @@ def _is_theme_mechanism_valid(theme: str, mechanism: str) -> bool:
     if theme == "anger":
         anger_cause = any(token in lowered for token in ("attachment", "desire", "craving", "expectation"))
         anger_effect = any(token in lowered for token in ("anger", "frustration", "rage", "react"))
-        clarity_loss = any(token in lowered for token in ("clarity", "confusion", "judgment", "impulse"))
-        return anger_cause and anger_effect and clarity_loss
+        return anger_cause and anger_effect
     if theme == "stress":
         stress_inputs = any(
             token in lowered for token in ("pressure", "uncertainty", "duality", "overload", "stress")
@@ -1330,12 +2324,36 @@ def _is_theme_mechanism_valid(theme: str, mechanism: str) -> bool:
         return failure_cause and failure_effect
     if theme == "existential":
         existential_cause = any(
-            token in lowered for token in ("meaning", "purpose", "empty", "hollow", "motivation")
+            token in lowered for token in ("meaning", "purpose", "empty", "hollow", "motivation", "suffering", "death")
         )
         existential_effect = any(
             token in lowered for token in ("mind", "direction", "fatigue", "paralysis", "agency")
         )
         return existential_cause and existential_effect
+    if theme == "dharma_conflict":
+        dharma_cause = any(
+            token in lowered for token in ("duty", "calling", "career", "path", "choice", "svadharma", "moral")
+        )
+        dharma_effect = any(
+            token in lowered for token in ("clarity", "integrity", "alignment", "pressure", "conflict", "nature")
+        )
+        return dharma_cause and dharma_effect
+    if theme == "ego_conflict":
+        ego_cause = any(
+            token in lowered for token in ("ego", "pride", "comparison", "win", "winning", "validation", "recognition")
+        )
+        ego_effect = any(
+            token in lowered for token in ("humility", "resentment", "identity", "heat", "conflict", "self")
+        )
+        return ego_cause and ego_effect
+    if theme == "attachment":
+        attachment_cause = any(
+            token in lowered for token in ("attachment", "attached", "cling", "fear", "losing", "approval", "outcome")
+        )
+        attachment_effect = any(
+            token in lowered for token in ("peace", "restless", "identity", "control", "loss", "clinging")
+        )
+        return attachment_cause and attachment_effect
     if theme == "focus":
         focus_cause = any(
             token in lowered for token in ("attention", "distraction", "wandering", "task-switch", "fragment")
@@ -1379,6 +2397,11 @@ def _has_real_life_context(practical: str) -> bool:
         "career",
         "exam",
         "interview",
+        "friend",
+        "betray",
+        "betrayal",
+        "revenge",
+        "trust",
     )
     return any(marker in lowered for marker in markers)
 
@@ -1406,7 +2429,21 @@ def _is_theme_action_valid(theme: str, practical: str) -> bool:
             for token in ("strategy", "review", "practice", "consistency", "method", "feedback", "goal")
         )
     if theme == "anger":
-        return any(token in lowered for token in ("pause", "step away", "reframe", "time-out", "trigger", "delay"))
+        return any(
+            token in lowered
+            for token in (
+                "pause",
+                "step away",
+                "reframe",
+                "time-out",
+                "trigger",
+                "delay",
+                "acknowledge",
+                "self-reflection",
+                "seek support",
+                "temporary",
+            )
+        )
     if theme == "stress":
         return any(
             token in lowered for token in ("breath", "task", "deadline", "sprint", "focus", "control", "ground")
@@ -1414,6 +2451,18 @@ def _is_theme_action_valid(theme: str, practical: str) -> bool:
     if theme == "peace":
         return any(
             token in lowered for token in ("gratitude", "comparison", "simplify", "contentment", "quiet", "wanting")
+        )
+    if theme == "dharma_conflict":
+        return any(
+            token in lowered for token in ("clarity", "choose", "journal", "align", "reflect", "responsibility", "svadharma")
+        )
+    if theme == "ego_conflict":
+        return any(
+            token in lowered for token in ("observe", "pause", "humble", "reframe", "compassion", "steady", "detach")
+        )
+    if theme == "attachment":
+        return any(
+            token in lowered for token in ("release", "steady", "breathe", "observe", "withdraw", "non-attachment", "care")
         )
     if theme == "failure":
         return any(

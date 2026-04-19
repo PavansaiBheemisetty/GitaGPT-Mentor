@@ -46,5 +46,50 @@ export interface UiMessage {
   role: Role;
   content: string;
   response?: ChatResponse;
-  status?: "sending" | "failed";
+  status?: "thinking" | "streaming" | "failed";
 }
+
+export interface ChatSession {
+  id: string;
+  user_id: string;
+  title: string;
+  summary?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoredMessage {
+  id: number;
+  session_id: string;
+  role: Role;
+  content: string;
+  request_id?: string;
+  response?: ChatResponse;
+  timestamp: string;
+}
+
+export interface StreamThinkingEvent {
+  type: "thinking";
+}
+
+export interface StreamTokenEvent {
+  type: "token";
+  token: string;
+  content: string;
+}
+
+export interface StreamDoneEvent {
+  type: "done";
+  response: ChatResponse;
+}
+
+export interface StreamErrorEvent {
+  type: "error";
+  message: string;
+}
+
+export type ChatStreamEvent =
+  | StreamThinkingEvent
+  | StreamTokenEvent
+  | StreamDoneEvent
+  | StreamErrorEvent;

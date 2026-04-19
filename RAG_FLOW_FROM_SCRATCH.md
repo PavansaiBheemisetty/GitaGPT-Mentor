@@ -157,7 +157,7 @@ Guards against abuse and oversized input:
 
 ### `_llm_model_name(self)`
 
-Returns configured model name based on provider (`ollama`, `openai`, or `template`).
+Returns configured model name based on provider (`modal`, `groq`, `openai`, or `template`).
 
 ---
 
@@ -206,7 +206,8 @@ This is where text answer is created and quality-controlled.
 
 `Generator` has 3 provider paths:
 - `template` (deterministic fallback mode)
-- `ollama` (local LLM API)
+- `modal` (primary remote LLM API)
+- `groq` (fallback/alternate remote LLM API)
 - `openai` (OpenAI chat API)
 
 Then it enforces output contract so response format remains safe and consistent.
@@ -217,18 +218,18 @@ Decision logic:
 
 1. Read provider from settings.
 2. If `template`: directly return `_template_answer(...)`.
-3. If `ollama`: call `_ollama(...)`, then `_enforce_contract(...)`.
+3. If `modal`: call Modal endpoint, then `_enforce_contract(...)`; if Modal fails, fallback to Groq.
 4. If `openai`: call `_openai(...)`, then `_enforce_contract(...)`.
 5. Unknown provider -> `ValueError`.
 
-### `async _ollama(...)`
+### `async _generate_with_modal_fallback(...)`
 
 - Builds user prompt via `build_user_prompt(...)` in [backend/app/rag/prompt.py](backend/app/rag/prompt.py).
-- Sends HTTP POST to `OLLAMA_BASE_URL/api/chat` with:
+- Sends HTTP POST to `MODAL_BASE_URL/chat/completions` with OpenAI-compatible payload:
   - `SYSTEM_PROMPT`
   - user prompt
   - temperature, token and context settings
-- Extracts text with `_extract_ollama_content(...)`.
+- Extracts text with `_extract_chat_completions_content(...)`.
 - If output is empty because of `done_reason == "length"`, retries with compact prompt (`max_chunks=4`, smaller chunk chars).
 
 ### `async _openai(...)`
@@ -528,7 +529,7 @@ Top ones to understand first:
 - `PDF_PATH`: if missing, ingest fails.
 - `FAISS_INDEX_PATH` and `FAISS_METADATA_PATH`: if missing, `/chat` cannot retrieve and returns service error.
 - `EMBEDDING_PROVIDER`: if package not installed for chosen provider, startup/ingest can fail.
-- `LLM_PROVIDER`: chooses answer generation backend (`template`, `ollama`, `openai`).
+- `LLM_PROVIDER`: chooses answer generation backend (`template`, `modal`, `groq`, `openai`).
 - `OPENAI_API_KEY`: required when provider is `openai`.
 - `RETRIEVAL_MIN_SCORE`: too high can cause frequent no-context responses.
 - `MAX_MESSAGE_CHARS`, `MAX_HISTORY_*`: request validation limits.
@@ -548,7 +549,7 @@ Top ones to understand first:
 - Route response: 422.
 
 3. LLM down/unavailable
-- Trigger: Ollama unreachable or OpenAI issue.
+- Trigger: Modal unreachable and Groq fallback unavailable (or OpenAI issue when configured).
 - Location: generation call in [backend/app/services/chat_service.py](backend/app/services/chat_service.py).
 - Route response: custom `GitaGPTError` -> 503.
 

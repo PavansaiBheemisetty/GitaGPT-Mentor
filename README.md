@@ -67,6 +67,19 @@ Intent is mapped to a theme with verse priorities and a dedicated reasoning lens
 - Diversity-aware selection across translation and purport chunks
 - Recent-verse memory to reduce repetitive citations in a conversation
 
+### � 4. Authenticated Sessions and Persistence
+
+- Supabase Auth (Google + email magic-link)
+- User-scoped chat sessions with persistent history in PostgreSQL
+- Session summaries refreshed as new turns arrive
+- Same account always loads the same chats
+
+### ⚡ 5. Real-Time Streaming Chat
+
+- WebSocket endpoint streams assistant output token-by-token
+- UI shows Thinking -> Streaming -> Done transitions
+- Resilient retry UX preserves the user draft on failure
+
 ---
 
 ### 🧩 4. Structured Response Engine
@@ -84,7 +97,7 @@ This keeps output useful, readable, and consistent.
 
 ---
 
-### 🛡️ 5. Guardrails and Validation
+### 🛡️ 6. Guardrails and Validation
 
 - Enforced section structure
 - Word-range checks
@@ -96,7 +109,7 @@ This keeps output useful, readable, and consistent.
 
 ---
 
-### 🚫 6. Out-of-Scope Handling
+### 🚫 7. Out-of-Scope Handling
 
 The system avoids forcing Gita guidance onto unrelated factual requests.
 
@@ -118,7 +131,7 @@ Intent → Theme Mapping
 		↓
 Retriever (Embeddings + Vector Store + Rerank)
 		↓
-LLM Generation (Ollama / OpenAI / Template)
+LLM Generation (Modal / Groq fallback / OpenAI / Template)
 		↓
 Contract Validation Layer
 		↓
@@ -152,7 +165,7 @@ frontend/
 - Frontend: Next.js 15 + React 19 + TypeScript
 - Embeddings: BGE (`sentence-transformers`) / OpenAI / hash fallback
 - Vector search: FAISS / simple local store
-- Generation: Ollama / OpenAI / deterministic template fallback
+- Generation: Modal (primary) / Groq fallback / OpenAI / deterministic template fallback
 
 ---
 
@@ -210,6 +223,20 @@ python scripts/ingest.py
 uvicorn app.main:app --reload
 ```
 
+### 6.1) Apply chat schema (required for persistence)
+
+Run SQL from `backend/sql/chat_schema.sql` in Supabase SQL editor (or your PostgreSQL instance).
+
+### 6.2) Configure backend env
+
+Copy `backend/.env.example` to `backend/.env` and set:
+
+- `DATABASE_URL`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- Optional: `AUTH_REQUIRED=true` to block unauthenticated chat calls
+
 ### 7) Run frontend
 
 ```bash
@@ -217,7 +244,31 @@ cd ../frontend
 npm run dev
 ```
 
+Copy `frontend/.env.example` to `frontend/.env.local` and set:
+
+- `NEXT_PUBLIC_API_BASE_URL`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
 Open http://localhost:3000.
+
+## 🗃️ Database Schema
+
+`backend/sql/chat_schema.sql` creates:
+
+- `users`
+- `chat_sessions`
+- `messages`
+
+Each session is user-owned, messages are session-owned, and summaries are maintained on `chat_sessions.summary`.
+
+## 🔌 API Surface
+
+- `POST /chat` (classic non-stream response)
+- `GET /chat/sessions` (authenticated)
+- `POST /chat/sessions` (authenticated)
+- `GET /chat/sessions/{session_id}/messages` (authenticated)
+- `WS /chat/stream/ws` (streaming events: `thinking`, `token`, `done`, `error`)
 
 ---
 
@@ -231,7 +282,8 @@ Open http://localhost:3000.
 
 ### LLM
 
-- `LLM_PROVIDER=ollama`
+- `LLM_PROVIDER=modal`
+- `LLM_PROVIDER=groq`
 - `LLM_PROVIDER=openai`
 - `LLM_PROVIDER=template` (deterministic fallback)
 
