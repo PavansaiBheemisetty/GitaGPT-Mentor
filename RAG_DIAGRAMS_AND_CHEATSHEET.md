@@ -154,6 +154,84 @@ flowchart TD
 - GET /chat/sessions/{session_id}/messages
 - WS /chat/stream/ws
 
+## 5.2 Backend directory quick inventory (all project files)
+
+### backend root
+
+- [backend/pyproject.toml](backend/pyproject.toml)
+- [backend/.env](backend/.env)
+- [backend/.env.example](backend/.env.example)
+- [backend/.DS_Store](backend/.DS_Store)
+
+### backend/app
+
+- [backend/app/main.py](backend/app/main.py)
+- [backend/app/__init__.py](backend/app/__init__.py)
+- [backend/app/.DS_Store](backend/app/.DS_Store)
+
+### backend/app/api
+
+- [backend/app/api/__init__.py](backend/app/api/__init__.py)
+- [backend/app/api/deps.py](backend/app/api/deps.py)
+- [backend/app/api/routes_chat.py](backend/app/api/routes_chat.py)
+- [backend/app/api/routes_health.py](backend/app/api/routes_health.py)
+
+### backend/app/core
+
+- [backend/app/core/__init__.py](backend/app/core/__init__.py)
+- [backend/app/core/config.py](backend/app/core/config.py)
+- [backend/app/core/errors.py](backend/app/core/errors.py)
+
+### backend/app/models
+
+- [backend/app/models/__init__.py](backend/app/models/__init__.py)
+- [backend/app/models/chat.py](backend/app/models/chat.py)
+- [backend/app/models/corpus.py](backend/app/models/corpus.py)
+
+### backend/app/rag
+
+- [backend/app/rag/__init__.py](backend/app/rag/__init__.py)
+- [backend/app/rag/chunker.py](backend/app/rag/chunker.py)
+- [backend/app/rag/citations.py](backend/app/rag/citations.py)
+- [backend/app/rag/corpus_report.py](backend/app/rag/corpus_report.py)
+- [backend/app/rag/embeddings.py](backend/app/rag/embeddings.py)
+- [backend/app/rag/generator.py](backend/app/rag/generator.py)
+- [backend/app/rag/intent_router.py](backend/app/rag/intent_router.py)
+- [backend/app/rag/normalizer.py](backend/app/rag/normalizer.py)
+- [backend/app/rag/parser.py](backend/app/rag/parser.py)
+- [backend/app/rag/pdf_loader.py](backend/app/rag/pdf_loader.py)
+- [backend/app/rag/prompt.py](backend/app/rag/prompt.py)
+- [backend/app/rag/retriever.py](backend/app/rag/retriever.py)
+- [backend/app/rag/theme_router.py](backend/app/rag/theme_router.py)
+- [backend/app/rag/vector_store.py](backend/app/rag/vector_store.py)
+
+### backend/app/services
+
+- [backend/app/services/__init__.py](backend/app/services/__init__.py)
+- [backend/app/services/auth_service.py](backend/app/services/auth_service.py)
+- [backend/app/services/chat_repository.py](backend/app/services/chat_repository.py)
+- [backend/app/services/chat_service.py](backend/app/services/chat_service.py)
+- [backend/app/services/session_memory.py](backend/app/services/session_memory.py)
+
+### backend/scripts
+
+- [backend/scripts/ingest.py](backend/scripts/ingest.py)
+- [backend/scripts/inspect_corpus.py](backend/scripts/inspect_corpus.py)
+
+### backend/sql
+
+- [backend/sql/chat_schema.sql](backend/sql/chat_schema.sql)
+
+### backend/tests
+
+- [backend/tests/test_chunker.py](backend/tests/test_chunker.py)
+- [backend/tests/test_citations.py](backend/tests/test_citations.py)
+- [backend/tests/test_corpus_report.py](backend/tests/test_corpus_report.py)
+- [backend/tests/test_generator_formatting.py](backend/tests/test_generator_formatting.py)
+- [backend/tests/test_intent_emotional_states.py](backend/tests/test_intent_emotional_states.py)
+- [backend/tests/test_normalizer.py](backend/tests/test_normalizer.py)
+- [backend/tests/test_parser.py](backend/tests/test_parser.py)
+
 ## 6) Function cheat sheet
 
 ### ChatService
@@ -182,6 +260,28 @@ flowchart TD
 - _modal/_groq/_openai: provider adapters
 - _template_answer: deterministic fallback
 - _enforce_contract: output quality gate
+
+### Generator helper groups (important internals)
+
+- Context and selection:
+    - _infer_real_life_context
+    - _pick_verse
+    - _stable_index
+    - _pick_variant
+    - _theme_profile
+- Validation:
+    - _extract_sections
+    - _is_theme_mechanism_valid
+    - _is_theme_action_valid
+    - _has_real_life_context
+- Post-processing:
+    - _post_process_answer
+    - _normalize_section_headings
+    - _normalize_practical_steps
+    - _normalize_bullets
+    - _normalize_wisdom_section
+    - _normalize_closing_line
+    - _generate_new_punchline
 
 ### ChatRepository
 
