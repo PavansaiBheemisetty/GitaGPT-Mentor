@@ -3,6 +3,9 @@
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 name: Build and deploy Python app to Azure Web App - GitaGPT
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches:
@@ -38,11 +41,15 @@ jobs:
       - name: Prepare deployment package
         run: |
           rm -rf deploy deploy.zip
-          mkdir -p deploy/backend
+          mkdir -p deploy/backend/data
           cp -R backend/app deploy/backend/
-          cp -R backend/data deploy/backend/
+          cp -R backend/data/index deploy/backend/data/
+          cp -R backend/data/processed deploy/backend/data/
           cp startup.sh deploy/
           cp -R python_packages deploy/
+          find deploy -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find deploy -type f -name '*.pyc' -delete
+          find deploy -type f -name '.DS_Store' -delete
           chmod +x deploy/startup.sh
 
       - name: Archive deployment package
@@ -51,11 +58,19 @@ jobs:
           zip -r ../deploy.zip .
           cd ..
 
+      - name: Validate deployment archive
+        run: |
+          test -f deploy.zip
+          unzip -l deploy.zip | grep -E 'startup\.sh|backend/app/main\.py|backend/data/index/faiss\.index|backend/data/index/metadata\.json' >/dev/null
+          echo "Archive size:"
+          ls -lh deploy.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: deploy-package
           path: deploy.zip
+          if-no-files-found: error
 
   deploy:
     runs-on: ubuntu-latest
@@ -69,7 +84,10 @@ jobs:
           path: .
 
       - name: Inspect downloaded files
-        run: ls -lah
+        run: |
+          echo "Working directory: $(pwd)"
+          ls -lah
+          find . -maxdepth 4 -type f -name 'deploy.zip' -print
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -77,4 +95,4 @@ jobs:
           app-name: 'GitaGPT'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_DCB88AD507594729B1E75C90483346A8 }}
-          package: deploy.zip
+          package: '**/deploy.zip'
