@@ -61,3 +61,35 @@ def test_grief_loss_validation_rules_are_specific():
 
     assert _is_theme_action_valid("grief_loss", valid_actions)
     assert not _is_theme_action_valid("grief_loss", invalid_actions)
+
+
+def test_non_life_practical_query_is_out_of_scope():
+    route = classify_query_intent("how to install an app from playstore?")
+
+    assert route.intent == "out_of_scope"
+
+
+def test_existential_questions_stay_in_scope():
+    route = classify_query_intent("Why is there suffering and does my life matter?")
+
+    assert route.intent == "existential"
+
+
+def test_dharma_conflict_is_classified_separately():
+    route = classify_query_intent("My career feels like duty, but it is not my calling")
+
+    assert route.intent == "dharma_conflict"
+
+
+def test_attachment_and_ego_signals_route_out_of_generic_scope():
+    attachment = classify_query_intent("I am afraid to lose the success I built and cannot let go")
+    ego = classify_query_intent("I need to win and prove them wrong")
+
+    assert attachment.intent == "attachment"
+    assert ego.intent == "ego_conflict"
+
+
+def test_procrastination_with_phone_context_is_not_out_of_scope():
+    route = classify_query_intent("I keep procrastinating because of phone reels and can't focus")
+
+    assert route.intent in {"focus", "performance_context"}

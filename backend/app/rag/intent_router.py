@@ -12,6 +12,79 @@ class IntentRoute:
 
 
 INTENT_DEFINITIONS = {
+    "existential": {
+        "keywords": [
+            "meaning",
+            "meaning of life",
+            "purpose of life",
+            "life matter",
+            "does my life matter",
+            "why live",
+            "why is the world broken",
+            "world broken",
+            "broken world",
+            "suffering",
+            "injustice",
+            "death",
+            "existence",
+            "existential",
+        ],
+        "prototype": "existential questions about suffering, purpose, death, brokenness, and whether life matters",
+    },
+    "dharma_conflict": {
+        "keywords": [
+            "dharma",
+            "svadharma",
+            "calling",
+            "career or calling",
+            "duty",
+            "moral conflict",
+            "should i quit",
+            "should i stay",
+            "right path",
+            "my path",
+            "imposter",
+            "family pressure",
+            "what should i do",
+        ],
+        "prototype": "duty versus calling, moral conflict, and learning to follow one's own path without imitation",
+    },
+    "ego_conflict": {
+        "keywords": [
+            "winning",
+            "prove them wrong",
+            "resentment",
+            "resentful",
+            "humiliated",
+            "pride",
+            "ego",
+            "validation",
+            "recognized",
+            "recognition",
+            "envy",
+            "jealous",
+            "comparison",
+        ],
+        "prototype": "ego-driven conflict, resentment, comparison, and the urge to defend identity through victory",
+    },
+    "attachment": {
+        "keywords": [
+            "fear of losing",
+            "can't let go",
+            "cannot let go",
+            "cling",
+            "clinging",
+            "attached",
+            "attachment",
+            "afraid to lose",
+            "dependent",
+            "hold on",
+            "need approval",
+            "success",
+            "outcome",
+        ],
+        "prototype": "attachment to outcomes, success, approval, and identity becoming fused with what may be lost",
+    },
     "grief_loss": {
         "keywords": [
             "death",
@@ -197,6 +270,22 @@ OUT_OF_SCOPE_HINTS = {
 }
 
 LIFE_GUIDANCE_HINTS = {
+    "meaning",
+    "meaning of life",
+    "purpose",
+    "purpose of life",
+    "suffering",
+    "injustice",
+    "broken world",
+    "world broken",
+    "life matter",
+    "does my life matter",
+    "dharma",
+    "svadharma",
+    "duty",
+    "calling",
+    "moral conflict",
+    "fear of losing",
     "i feel",
     "i am",
     "i regret",
@@ -222,6 +311,31 @@ LIFE_GUIDANCE_HINTS = {
     "death",
     "passed away",
     "grief",
+    "procrastination",
+    "procrastinate",
+    "lazy",
+    "laziness",
+    "focus",
+    "distracted",
+    "distraction",
+    "doomscroll",
+    "phone addiction",
+    "instagram",
+    "reels",
+}
+
+NON_LIFE_TASK_HINTS = {
+    "playstore",
+    "play store",
+    "app store",
+    "install app",
+    "download app",
+    "apk",
+    "android",
+    "iphone",
+    "ios",
+    "phone",
+    "mobile",
 }
 
 GRIEF_LOSS_HINTS = {
@@ -319,6 +433,14 @@ def classify_query_intent(query: str, embeddings: EmbeddingProvider | None = Non
     if _is_out_of_scope_query(lowered):
         return IntentRoute(intent="out_of_scope", confidence=0.9, matched_keywords=[])
 
+    if _is_non_life_practical_query(lowered):
+        return IntentRoute(intent="out_of_scope", confidence=0.95, matched_keywords=[])
+
+    primary_guidance = _detect_primary_guidance_intent(lowered)
+    if primary_guidance is not None:
+        intent, matched_keywords = primary_guidance
+        return IntentRoute(intent=intent, confidence=0.94, matched_keywords=matched_keywords)
+
     emotional_state = _detect_emotional_state(lowered)
     if emotional_state is not None:
         intent, matched_keywords = emotional_state
@@ -349,6 +471,10 @@ def classify_query_intent(query: str, embeddings: EmbeddingProvider | None = Non
     best_intent = max(combined_scores, key=combined_scores.get)
     best_score = combined_scores[best_intent]
     has_keyword_signal = any(len(items) > 0 for items in matched.values())
+    has_life_hint = any(token in lowered for token in LIFE_GUIDANCE_HINTS)
+
+    if not has_keyword_signal and not has_life_hint:
+        return IntentRoute(intent="out_of_scope", confidence=0.8, matched_keywords=[])
 
     if not has_keyword_signal and best_score < 0.11:
         return IntentRoute(intent="out_of_scope", confidence=0.7, matched_keywords=[])
@@ -362,6 +488,10 @@ def classify_query_intent(query: str, embeddings: EmbeddingProvider | None = Non
 
 def map_intent_to_theme(intent: str) -> str:
     mapping = {
+        "existential": "existential",
+        "dharma_conflict": "dharma_conflict",
+        "ego_conflict": "ego_conflict",
+        "attachment": "attachment",
         "grief_loss": "grief_loss",
         "emotional_low": "emotional_low",
         "emotional_high": "emotional_high",
@@ -379,6 +509,10 @@ def map_intent_to_theme(intent: str) -> str:
 
 def intent_tone(intent: str) -> str:
     tones = {
+        "existential": "grounding and meaning-focused",
+        "dharma_conflict": "clear, steady, and identity-aware",
+        "ego_conflict": "cooling, disentangling, and humbling",
+        "attachment": "gentle, clarifying, and releasing",
         "grief_loss": "deeply compassionate, grounded, and respectful",
         "emotional_low": "gentle, validating, and empathetic",
         "emotional_high": "calm, grounding, and balancing",
@@ -404,6 +538,114 @@ def _is_out_of_scope_query(lowered: str) -> bool:
         return True
 
     return False
+
+
+def _detect_primary_guidance_intent(lowered: str) -> tuple[str, list[str]] | None:
+    existential_hits = [
+        token
+        for token in (
+            "meaning of life",
+            "does my life matter",
+            "why is the world broken",
+            "world broken",
+            "broken world",
+            "purpose of life",
+            "suffering",
+            "injustice",
+            "death",
+            "existence",
+            "why live",
+            "what is the purpose",
+            "meaningless",
+            "empty",
+            "emptiness",
+        )
+        if token in lowered
+    ]
+    if existential_hits:
+        return "existential", existential_hits
+
+    dharma_hits = [
+        token
+        for token in (
+            "dharma",
+            "svadharma",
+            "calling",
+            "career or calling",
+            "moral conflict",
+            "should i quit",
+            "should i stay",
+            "right path",
+            "my path",
+            "what should i do",
+            "family pressure",
+            "duty",
+        )
+        if token in lowered
+    ]
+    if dharma_hits:
+        return "dharma_conflict", dharma_hits
+
+    ego_hits = [
+        token
+        for token in (
+            "winning",
+            "prove them wrong",
+            "resentment",
+            "resentful",
+            "humiliated",
+            "pride",
+            "ego",
+            "validation",
+            "recognized",
+            "recognition",
+            "envy",
+            "jealous",
+            "comparison",
+        )
+        if token in lowered
+    ]
+    if ego_hits:
+        return "ego_conflict", ego_hits
+
+    attachment_hits = [
+        token
+        for token in (
+            "fear of losing",
+            "can't let go",
+            "cannot let go",
+            "cling",
+            "clinging",
+            "attached",
+            "attachment",
+            "afraid to lose",
+            "dependent",
+            "hold on",
+            "need approval",
+        )
+        if token in lowered
+    ]
+    if attachment_hits:
+        return "attachment", attachment_hits
+
+    return None
+
+
+def _is_non_life_practical_query(lowered: str) -> bool:
+    non_life_hits = [token for token in NON_LIFE_TASK_HINTS if token in lowered]
+    if not non_life_hits:
+        return False
+
+    # If there is any known life-guidance signal, this should not be rejected.
+    for data in INTENT_DEFINITIONS.values():
+        if any(keyword in lowered for keyword in data["keywords"]):
+            return False
+
+    life_hits = [token for token in LIFE_GUIDANCE_HINTS if token in lowered]
+    if life_hits:
+        return False
+
+    return True
 
 
 def _detect_emotional_state(lowered: str) -> tuple[str, list[str]] | None:
