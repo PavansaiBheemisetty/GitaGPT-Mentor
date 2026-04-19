@@ -18,6 +18,14 @@ Instead of doing plain retrieve-then-summarize, it runs a multi-stage pipeline:
 
 ---
 
+## 📘 Documentation Guides
+
+- Backend deep dive: [RAG_FLOW_FROM_SCRATCH.md](RAG_FLOW_FROM_SCRATCH.md)
+- Backend visual cheat-sheet: [RAG_DIAGRAMS_AND_CHEATSHEET.md](RAG_DIAGRAMS_AND_CHEATSHEET.md)
+- Frontend architecture guide: [FRONTEND_OVERVIEW.md](FRONTEND_OVERVIEW.md)
+
+---
+
 ## ✨ Key Features
 
 ### 🔍 1. Intent Classification Layer
@@ -67,7 +75,7 @@ Intent is mapped to a theme with verse priorities and a dedicated reasoning lens
 - Diversity-aware selection across translation and purport chunks
 - Recent-verse memory to reduce repetitive citations in a conversation
 
-### � 4. Authenticated Sessions and Persistence
+### 🔐 4. Authenticated Sessions and Persistence
 
 - Supabase Auth (Google + email magic-link)
 - User-scoped chat sessions with persistent history in PostgreSQL
@@ -82,7 +90,7 @@ Intent is mapped to a theme with verse priorities and a dedicated reasoning lens
 
 ---
 
-### 🧩 4. Structured Response Engine
+### 🧩 6. Structured Response Engine
 
 Every answer is built to follow this format:
 
@@ -97,7 +105,7 @@ This keeps output useful, readable, and consistent.
 
 ---
 
-### 🛡️ 6. Guardrails and Validation
+### 🛡️ 7. Guardrails and Validation
 
 - Enforced section structure
 - Word-range checks
@@ -109,7 +117,7 @@ This keeps output useful, readable, and consistent.
 
 ---
 
-### 🚫 7. Out-of-Scope Handling
+### 🚫 8. Out-of-Scope Handling
 
 The system avoids forcing Gita guidance onto unrelated factual requests.
 
