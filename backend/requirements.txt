@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+asyncpg
+pydantic
+pydantic-settings
+httpx
+numpy
+PyMuPDF
+faiss-cpu
+sentence-transformers
