@@ -13,10 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: backend   # 👈 IMPORTANT
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,19 +22,34 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 🔥 Install dependencies into custom folder
-      - name: Install dependencies
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install backend dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt -t ../python_packages
+          pip install -r backend/requirements.txt -t python_packages
 
-      # Upload entire project including installed packages
+      - name: Prepare deployment package
+        run: |
+          rm -rf deploy
+          mkdir -p deploy
+          cp -R backend deploy/
+          cp startup.sh deploy/
+          cp -R python_packages deploy/
+          chmod +x deploy/startup.sh
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-app
+          name: deploy-package
           path: |
-            .
+            deploy
 
   deploy:
     runs-on: ubuntu-latest
@@ -48,7 +59,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: python-app
+          name: deploy-package
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -56,3 +67,4 @@ jobs:
           app-name: 'GitaGPT'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_DCB88AD507594729B1E75C90483346A8 }}
+          package: deploy
