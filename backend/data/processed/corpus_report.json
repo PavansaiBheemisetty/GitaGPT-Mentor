@@ -1,0 +1,339 @@
+{
+  "by_chapter": {
+    "1": {
+      "purports": 40,
+      "translations": 45,
+      "verses": 45
+    },
+    "10": {
+      "purports": 42,
+      "translations": 42,
+      "verses": 42
+    },
+    "11": {
+      "purports": 44,
+      "translations": 55,
+      "verses": 55
+    },
+    "12": {
+      "purports": 20,
+      "translations": 20,
+      "verses": 20
+    },
+    "13": {
+      "purports": 35,
+      "translations": 35,
+      "verses": 35
+    },
+    "14": {
+      "purports": 27,
+      "translations": 27,
+      "verses": 27
+    },
+    "15": {
+      "purports": 20,
+      "translations": 20,
+      "verses": 20
+    },
+    "16": {
+      "purports": 21,
+      "translations": 24,
+      "verses": 24
+    },
+    "17": {
+      "purports": 25,
+      "translations": 28,
+      "verses": 28
+    },
+    "18": {
+      "purports": 69,
+      "translations": 78,
+      "verses": 78
+    },
+    "2": {
+      "purports": 71,
+      "translations": 72,
+      "verses": 72
+    },
+    "3": {
+      "purports": 43,
+      "translations": 43,
+      "verses": 43
+    },
+    "4": {
+      "purports": 42,
+      "translations": 42,
+      "verses": 42
+    },
+    "5": {
+      "purports": 29,
+      "translations": 29,
+      "verses": 29
+    },
+    "6": {
+      "purports": 46,
+      "translations": 47,
+      "verses": 47
+    },
+    "7": {
+      "purports": 30,
+      "translations": 30,
+      "verses": 30
+    },
+    "8": {
+      "purports": 27,
+      "translations": 28,
+      "verses": 28
+    },
+    "9": {
+      "purports": 34,
+      "translations": 34,
+      "verses": 34
+    }
+  },
+  "purports": 665,
+  "sample_warnings": [
+    {
+      "chapter": 1,
+      "source_pages": [],
+      "verse": "5",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 1,
+      "source_pages": [
+        49
+      ],
+      "verse": "6",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 1,
+      "source_pages": [],
+      "verse": "7",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 1,
+      "source_pages": [],
+      "verse": "13",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 1,
+      "source_pages": [
+        69
+      ],
+      "verse": "27",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 2,
+      "source_pages": [
+        89,
+        162,
+        163
+      ],
+      "verse": "46",
+      "warnings": [
+        "duplicate_verse"
+      ]
+    },
+    {
+      "chapter": 2,
+      "source_pages": [
+        189
+      ],
+      "verse": "65",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 6,
+      "source_pages": [],
+      "verse": "9",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 8,
+      "source_pages": [],
+      "verse": "18",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [],
+      "verse": "9",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        675
+      ],
+      "verse": "17",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        676
+      ],
+      "verse": "18",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        680
+      ],
+      "verse": "22",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [],
+      "verse": "23",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        681
+      ],
+      "verse": "24",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        682
+      ],
+      "verse": "25",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        684
+      ],
+      "verse": "28",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        685
+      ],
+      "verse": "29",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [],
+      "verse": "30",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 11,
+      "source_pages": [
+        686
+      ],
+      "verse": "31",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 16,
+      "source_pages": [
+        893,
+        894
+      ],
+      "verse": "13-15",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 17,
+      "source_pages": [],
+      "verse": "8",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 17,
+      "source_pages": [
+        918
+      ],
+      "verse": "9",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 17,
+      "source_pages": [
+        927
+      ],
+      "verse": "17",
+      "warnings": [
+        "missing_purport"
+      ]
+    },
+    {
+      "chapter": 18,
+      "source_pages": [
+        965
+      ],
+      "verse": "24",
+      "warnings": [
+        "missing_purport"
+      ]
+    }
+  ],
+  "total_records": 656,
+  "total_verses": 699,
+  "translations": 699,
+  "warnings": {
+    "duplicate_verse": 1,
+    "missing_purport": 32
+  }
+}
