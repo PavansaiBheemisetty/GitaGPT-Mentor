@@ -1,36 +1,48 @@
 .DS_Store
+
+# ENV (keep ignored)
+
 .env
 .env.*
 !.env.example
 
 # Python
+
 .venv/
-__pycache__/
+**pycache**/
 .pytest_cache/
 *.pyc
 *.egg-info/
 
 # Node / Next.js
+
 node_modules/
 .next/
 out/
 npm-debug.log*
 
-# Local corpus and generated artifacts
+# ❌ Ignore raw PDF (large + not needed in prod)
+
 *.pdf
 !backend/tests/fixtures/**/*.pdf
 backend/data/raw/*
 !backend/data/raw/.gitkeep
-backend/data/processed/*
-!backend/data/processed/.gitkeep
-backend/data/index/*
-!backend/data/index/.gitkeep
 
-# Local extraction fixtures may contain copyrighted text.
+# ✅ KEEP processed + index (CRITICAL for deployment)
+
+# (Do NOT ignore these anymore)
+
+# backend/data/processed/*
+
+# backend/data/index/*
+
+# Only ignore local fixtures
+
 backend/data/fixtures/local/*
 !backend/data/fixtures/local/.gitkeep
 
-# Local agent instruction docs
+# Local agent docs
+
 AGENTS.md
 CLAUDE.md
 TODOS.md
