@@ -60,6 +60,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: deploy-package
+          path: deploy-package
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -67,4 +68,4 @@ jobs:
           app-name: 'GitaGPT'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_DCB88AD507594729B1E75C90483346A8 }}
-          package: deploy
+          package: deploy-package/deploy
