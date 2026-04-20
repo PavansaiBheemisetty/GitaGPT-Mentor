@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -26,6 +27,7 @@ from app.services.chat_service import ChatService
 from app.core.config import get_settings
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -229,6 +231,25 @@ async def stream_chat(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "done", "response": response.model_dump()})
     except WebSocketDisconnect:
         return
+    except GitaGPTError as exc:
+        logger.warning(
+            "WebSocket chat provider failure: message=%s cause=%s",
+            exc.message,
+            exc.cause or "unknown",
+        )
+        detail_parts = [exc.message]
+        if exc.cause:
+            detail_parts.append(f"Cause: {exc.cause}")
+        if exc.fix:
+            detail_parts.append(f"Fix: {exc.fix}")
+        await websocket.send_json({"type": "error", "message": " ".join(detail_parts)})
+        await websocket.close(code=1011)
     except Exception as exc:
-        await websocket.send_json({"type": "error", "message": str(exc)})
+        logger.exception("Unexpected WebSocket chat streaming error.")
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": "Streaming failed unexpectedly. Please retry.",
+            }
+        )
         await websocket.close(code=1011)

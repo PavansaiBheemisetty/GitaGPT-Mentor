@@ -2,7 +2,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     modal_base_url: str = "https://api.us-west-2.modal.direct/v1"
     modal_api_key: str | None = None
     modal_model: str = "zai-org/GLM-5.1-FP8"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     hf_token: str | None = None
 
     retrieval_top_k: int = 6
@@ -82,6 +85,46 @@ class Settings(BaseSettings):
             if "127.0.0.1" in origin:
                 expanded.add(origin.replace("127.0.0.1", "localhost"))
         return sorted(expanded)
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def normalize_llm_provider(cls, value: str | None) -> str:
+        if value is None:
+            return "groq"
+        normalized = str(value).strip().lower()
+        return normalized or "groq"
+
+    @field_validator(
+        "groq_base_url",
+        "modal_base_url",
+        "openrouter_base_url",
+        mode="before",
+    )
+    @classmethod
+    def normalize_base_urls(cls, value: str | None, info: ValidationInfo) -> str:
+        defaults = {
+            "groq_base_url": "https://api.groq.com/openai/v1",
+            "modal_base_url": "https://api.us-west-2.modal.direct/v1",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+        }
+        fallback = defaults[info.field_name]
+        if value is None:
+            return fallback
+        normalized = str(value).strip()
+        return normalized or fallback
+
+    @field_validator(
+        "groq_api_key",
+        "modal_api_key",
+        "openrouter_api_key",
+        mode="before",
+    )
+    @classmethod
+    def normalize_string_settings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
 
 @lru_cache

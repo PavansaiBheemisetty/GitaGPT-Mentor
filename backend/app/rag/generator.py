@@ -114,7 +114,9 @@ class Generator:
         memory_context: str | None = None,
         on_token: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        provider = self.settings.llm_provider.lower()
+        provider = (self.settings.llm_provider or "groq").strip().lower()
+        if provider == "open-router":
+            provider = "openrouter"
         if provider == "template":
             answer = _template_answer(question, chunks, intent=intent, theme=theme)
             if on_token:
@@ -122,7 +124,7 @@ class Generator:
                     await on_token(token)
             return answer
 
-        # Smart fallback chain: try the configured provider first, then the other, then template.
+        # Real-provider failover chain. Do not auto-fallback to template in production.
         raw = await self._generate_with_fallback(
             question,
             chunks,
@@ -152,11 +154,8 @@ class Generator:
         on_token: Callable[[str], Awaitable[None]] | None,
         primary: str,
     ) -> str:
-        """Try providers in order: primary → secondary → template as last resort."""
-        # Build the ordered list of providers to attempt.
-        provider_order: list[str] = [primary]
-        secondary = "modal" if primary == "groq" else "groq"
-        provider_order.append(secondary)
+        """Try configured providers in deterministic order and fail loudly if all fail."""
+        provider_order = self._provider_chain(primary)
 
         errors: list[str] = []
         for provider_name in provider_order:
@@ -183,6 +182,21 @@ class Generator:
                         intent=intent, theme=theme, avoid_verses=avoid_verses,
                         memory_context=memory_context, on_token=on_token,
                     )
+                elif provider_name == "openrouter":
+                    if not self.settings.openrouter_api_key:
+                        logger.warning("OPENROUTER_API_KEY not configured, skipping OpenRouter.")
+                        errors.append("OpenRouter: API key not configured")
+                        continue
+                    logger.info("Attempting LLM generation via OpenRouter (%s).", self.settings.openrouter_model)
+                    return await self._openrouter(
+                        question,
+                        chunks,
+                        intent=intent,
+                        theme=theme,
+                        avoid_verses=avoid_verses,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                    )
                 else:
                     errors.append(f"Unknown provider: {provider_name}")
             except Exception as exc:
@@ -192,9 +206,25 @@ class Generator:
         # All real providers failed — raise with diagnostic info, do NOT silently fall back to template.
         error_summary = "; ".join(errors)
         raise RuntimeError(
-            f"All LLM providers failed. {error_summary}. "
-            "Set GROQ_API_KEY (primary) and MODAL_API_KEY (fallback) in your environment."
+            "All LLM providers failed. "
+            f"Requested primary={primary}; attempted={provider_order}; details={error_summary}. "
+            "Set GROQ_API_KEY, MODAL_API_KEY, or OPENROUTER_API_KEY in your environment."
         )
+
+    def _provider_chain(self, primary: str) -> list[str]:
+        normalized = (primary or "groq").strip().lower()
+        if normalized == "open-router":
+            normalized = "openrouter"
+
+        if normalized == "groq":
+            return ["groq", "modal", "openrouter"]
+        if normalized == "modal":
+            return ["modal", "groq", "openrouter"]
+        if normalized == "openrouter":
+            return ["openrouter", "groq", "modal"]
+
+        logger.warning("Unknown LLM_PROVIDER '%s'; using default failover order.", primary)
+        return ["groq", "modal", "openrouter"]
 
     async def _modal(
         self,
@@ -244,6 +274,30 @@ class Generator:
             on_token=on_token,
         )
 
+    async def _openrouter(
+        self,
+        question: str,
+        chunks: list[RetrievedChunk],
+        *,
+        intent: str,
+        theme: str,
+        avoid_verses: list[str],
+        memory_context: str | None,
+        on_token: Callable[[str], Awaitable[None]] | None,
+    ) -> str:
+        return await self._chat_completions_request(
+            base_url=self.settings.openrouter_base_url,
+            api_key=self.settings.openrouter_api_key,
+            model=self.settings.openrouter_model,
+            question=question,
+            chunks=chunks,
+            intent=intent,
+            theme=theme,
+            avoid_verses=avoid_verses,
+            memory_context=memory_context,
+            on_token=on_token,
+        )
+
     async def _chat_completions_request(
         self,
         *,
@@ -257,6 +311,7 @@ class Generator:
         avoid_verses: list[str],
         memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
+        extra_headers: dict[str, str] | None = None,
     ) -> str:
         prompt = build_user_prompt(
             question,
@@ -279,6 +334,8 @@ class Generator:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         url = f"{base_url.rstrip('/')}/chat/completions"
 
         async with httpx.AsyncClient(timeout=60) as client:

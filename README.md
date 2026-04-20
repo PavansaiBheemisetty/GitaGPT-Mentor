@@ -139,7 +139,7 @@ Intent → Theme Mapping
 		↓
 Retriever (Embeddings + Vector Store + Rerank)
 		↓
-LLM Generation (Modal / Groq fallback / OpenAI / Template)
+LLM Generation (Groq primary, Modal fallback, OpenRouter fallback, optional template mode)
 		↓
 Contract Validation Layer
 		↓
@@ -173,7 +173,7 @@ frontend/
 - Frontend: Next.js 15 + React 19 + TypeScript
 - Embeddings: BGE (`sentence-transformers`) / OpenAI / hash fallback
 - Vector search: FAISS / simple local store
-- Generation: Modal (primary) / Groq fallback / OpenAI / deterministic template fallback
+- Generation: Groq (primary by default) / Modal fallback / OpenRouter fallback / template mode
 
 ---
 
@@ -292,7 +292,7 @@ Each session is user-owned, messages are session-owned, and summaries are mainta
 
 - `LLM_PROVIDER=modal`
 - `LLM_PROVIDER=groq`
-- `LLM_PROVIDER=openai`
+- `LLM_PROVIDER=openrouter`
 - `LLM_PROVIDER=template` (deterministic fallback)
 
 If native ML dependencies are unavailable:

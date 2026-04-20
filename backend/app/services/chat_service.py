@@ -108,7 +108,11 @@ class ChatService:
             raise GitaGPTError(
                 "The language model provider is unavailable.",
                 cause=str(exc),
-                fix="Set GROQ_API_KEY and GROQ_MODEL (primary). Configure MODAL_API_KEY and MODAL_MODEL for fallback.",
+                fix=(
+                    "Set GROQ_API_KEY and GROQ_MODEL (primary). "
+                    "Configure MODAL_API_KEY and MODAL_MODEL as first fallback. "
+                    "Optionally set OPENROUTER_API_KEY and OPENROUTER_MODEL as an additional fallback."
+                ),
             ) from exc
         citations = backend_citations(chunks)
         warnings = []
@@ -144,6 +148,8 @@ class ChatService:
             return self.settings.groq_model
         if self.settings.llm_provider == "modal":
             return self.settings.modal_model
+        if self.settings.llm_provider in {"openrouter", "open-router"}:
+            return self.settings.openrouter_model
         return "template"
 
     async def _resolve_history_and_summary(
