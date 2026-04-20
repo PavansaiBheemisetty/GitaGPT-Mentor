@@ -33,16 +33,14 @@ class Settings(BaseSettings):
     embedding_device: str = "cpu"
     vector_store_provider: str = "faiss"
 
-    llm_provider: str = "modal"
-    modal_base_url: str = "https://api.us-west-2.modal.direct/v1"
-    modal_api_key: str | None = None
-    modal_model: str = "zai-org/GLM-5.1-FP8"
+    llm_provider: str = "groq"
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_api_key: str | None = None
     groq_model: str = "llama-3.1-8b-instant"
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1-mini"
-    openai_embedding_model: str = "text-embedding-3-small"
+    modal_base_url: str = "https://api.us-west-2.modal.direct/v1"
+    modal_api_key: str | None = None
+    modal_model: str = "zai-org/GLM-5.1-FP8"
+    hf_token: str | None = None
 
     retrieval_top_k: int = 6
     retrieval_min_score: float = 0.35

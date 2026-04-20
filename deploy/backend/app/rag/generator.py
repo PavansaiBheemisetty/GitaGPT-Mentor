@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 from typing import Awaitable, Callable
 
@@ -7,6 +8,8 @@ import httpx
 from app.core.config import Settings
 from app.models.chat import RetrievedChunk
 from app.rag.prompt import SYSTEM_PROMPT, build_user_prompt
+
+logger = logging.getLogger(__name__)
 
 
 GENERIC_WELLNESS_SUBSTITUTIONS = {
@@ -119,39 +122,17 @@ class Generator:
                     await on_token(token)
             return answer
 
-        raw: str
-        if provider == "modal":
-            raw = await self._generate_with_modal_fallback(
-                question,
-                chunks,
-                intent=intent,
-                theme=theme,
-                avoid_verses=avoid_verses,
-                memory_context=memory_context,
-                on_token=None,
-            )
-        elif provider == "groq":
-            raw = await self._groq(
-                question,
-                chunks,
-                intent=intent,
-                theme=theme,
-                avoid_verses=avoid_verses,
-                memory_context=memory_context,
-                on_token=None,
-            )
-        elif provider == "openai":
-            raw = await self._openai(
-                question,
-                chunks,
-                intent=intent,
-                theme=theme,
-                avoid_verses=avoid_verses,
-                memory_context=memory_context,
-                on_token=None,
-            )
-        else:
-            raise ValueError(f"Unknown LLM provider: {self.settings.llm_provider}")
+        # Smart fallback chain: try the configured provider first, then the other, then template.
+        raw = await self._generate_with_fallback(
+            question,
+            chunks,
+            intent=intent,
+            theme=theme,
+            avoid_verses=avoid_verses,
+            memory_context=memory_context,
+            on_token=None,
+            primary=provider,
+        )
 
         final_answer = _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
         if on_token:
@@ -159,7 +140,7 @@ class Generator:
                 await on_token(token)
         return final_answer
 
-    async def _generate_with_modal_fallback(
+    async def _generate_with_fallback(
         self,
         question: str,
         chunks: list[RetrievedChunk],
@@ -169,40 +150,51 @@ class Generator:
         avoid_verses: list[str],
         memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
+        primary: str,
     ) -> str:
-        modal_error: Exception | None = None
-        try:
-            return await self._modal(
-                question,
-                chunks,
-                intent=intent,
-                theme=theme,
-                avoid_verses=avoid_verses,
-                memory_context=memory_context,
-                on_token=on_token,
-            )
-        except Exception as exc:
-            modal_error = exc
+        """Try providers in order: primary → secondary → template as last resort."""
+        # Build the ordered list of providers to attempt.
+        provider_order: list[str] = [primary]
+        secondary = "modal" if primary == "groq" else "groq"
+        provider_order.append(secondary)
 
-        if not self.settings.groq_api_key:
-            raise RuntimeError(
-                "Modal generation failed and GROQ_API_KEY is not configured for fallback."
-            ) from modal_error
+        errors: list[str] = []
+        for provider_name in provider_order:
+            try:
+                if provider_name == "groq":
+                    if not self.settings.groq_api_key:
+                        logger.warning("GROQ_API_KEY not configured, skipping Groq.")
+                        errors.append("Groq: API key not configured")
+                        continue
+                    logger.info("Attempting LLM generation via Groq (%s).", self.settings.groq_model)
+                    return await self._groq(
+                        question, chunks,
+                        intent=intent, theme=theme, avoid_verses=avoid_verses,
+                        memory_context=memory_context, on_token=on_token,
+                    )
+                elif provider_name == "modal":
+                    if not self.settings.modal_api_key:
+                        logger.warning("MODAL_API_KEY not configured, skipping Modal.")
+                        errors.append("Modal: API key not configured")
+                        continue
+                    logger.info("Attempting LLM generation via Modal (%s).", self.settings.modal_model)
+                    return await self._modal(
+                        question, chunks,
+                        intent=intent, theme=theme, avoid_verses=avoid_verses,
+                        memory_context=memory_context, on_token=on_token,
+                    )
+                else:
+                    errors.append(f"Unknown provider: {provider_name}")
+            except Exception as exc:
+                logger.error("LLM provider %s failed: %s", provider_name, exc)
+                errors.append(f"{provider_name}: {exc}")
 
-        try:
-            return await self._groq(
-                question,
-                chunks,
-                intent=intent,
-                theme=theme,
-                avoid_verses=avoid_verses,
-                memory_context=memory_context,
-                on_token=on_token,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Modal generation failed: {modal_error}. Groq fallback failed: {exc}."
-            ) from exc
+        # All real providers failed — raise with diagnostic info, do NOT silently fall back to template.
+        error_summary = "; ".join(errors)
+        raise RuntimeError(
+            f"All LLM providers failed. {error_summary}. "
+            "Set GROQ_API_KEY (primary) and MODAL_API_KEY (fallback) in your environment."
+        )
 
     async def _modal(
         self,
@@ -215,8 +207,6 @@ class Generator:
         memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
-        if not self.settings.modal_api_key:
-            raise RuntimeError("MODAL_API_KEY is required for Modal generation.")
         return await self._chat_completions_request(
             base_url=self.settings.modal_base_url,
             api_key=self.settings.modal_api_key,
@@ -241,8 +231,6 @@ class Generator:
         memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
-        if not self.settings.groq_api_key:
-            raise RuntimeError("GROQ_API_KEY is required for Groq generation.")
         return await self._chat_completions_request(
             base_url=self.settings.groq_base_url,
             api_key=self.settings.groq_api_key,
@@ -310,65 +298,6 @@ class Generator:
                 for token in _stream_tokens(content):
                     await on_token(token)
             return content
-
-    async def _openai(
-        self,
-        question: str,
-        chunks: list[RetrievedChunk],
-        *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
-        on_token: Callable[[str], Awaitable[None]] | None,
-    ) -> str:
-        if not self.settings.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for OpenAI generation.")
-        try:
-            from openai import AsyncOpenAI  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("openai package is not installed.") from exc
-
-        client = AsyncOpenAI(api_key=self.settings.openai_api_key)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": build_user_prompt(
-                    question,
-                    chunks,
-                    intent=intent,
-                    theme=theme,
-                    avoid_verses=avoid_verses,
-                    memory_context=memory_context,
-                ),
-            },
-        ]
-
-        if on_token:
-            stream = await client.chat.completions.create(
-                model=self.settings.openai_model,
-                temperature=0.35,
-                max_tokens=420,
-                messages=messages,
-                stream=True,
-            )
-            parts: list[str] = []
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if not delta:
-                    continue
-                parts.append(delta)
-                await on_token(delta)
-            return "".join(parts).strip()
-
-        response = await client.chat.completions.create(
-            model=self.settings.openai_model,
-            temperature=0.35,
-            max_tokens=420,
-            messages=messages,
-        )
-        return response.choices[0].message.content or ""
 
 
 def _template_answer(question: str, chunks: list[RetrievedChunk], *, intent: str, theme: str) -> str:

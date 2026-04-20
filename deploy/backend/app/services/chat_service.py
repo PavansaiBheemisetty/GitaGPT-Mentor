@@ -108,7 +108,7 @@ class ChatService:
             raise GitaGPTError(
                 "The language model provider is unavailable.",
                 cause=str(exc),
-                fix="Set MODAL_API_KEY and MODAL_MODEL. Configure GROQ_API_KEY and GROQ_MODEL for fallback.",
+                fix="Set GROQ_API_KEY and GROQ_MODEL (primary). Configure MODAL_API_KEY and MODAL_MODEL for fallback.",
             ) from exc
         citations = backend_citations(chunks)
         warnings = []
@@ -140,12 +140,10 @@ class ChatService:
             raise ValueError(f"history exceeds {self.settings.max_history_chars} characters")
 
     def _llm_model_name(self) -> str:
-        if self.settings.llm_provider == "modal":
-            return self.settings.modal_model
         if self.settings.llm_provider == "groq":
             return self.settings.groq_model
-        if self.settings.llm_provider == "openai":
-            return self.settings.openai_model
+        if self.settings.llm_provider == "modal":
+            return self.settings.modal_model
         return "template"
 
     async def _resolve_history_and_summary(

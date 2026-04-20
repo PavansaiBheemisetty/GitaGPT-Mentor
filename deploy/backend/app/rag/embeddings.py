@@ -49,34 +49,12 @@ class SentenceTransformersProvider(EmbeddingProvider):
         return [vector.tolist() for vector in vectors]
 
 
-class OpenAIEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, api_key: str | None, model_name: str) -> None:
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for OpenAI embeddings.")
-        try:
-            from openai import OpenAI  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("openai package is not installed.") from exc
-        self.model_name = model_name
-        self._client = OpenAI(api_key=api_key)
-        self.dimension = 0
-
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        response = self._client.embeddings.create(model=self.model_name, input=texts)
-        vectors = [item.embedding for item in response.data]
-        if vectors and not self.dimension:
-            self.dimension = len(vectors[0])
-        return vectors
-
-
 def create_embedding_provider(settings: Settings) -> EmbeddingProvider:
     provider = settings.embedding_provider.lower()
     if provider in {"hash", "local-hash"}:
         return HashEmbeddingProvider(dimension=settings.embedding_dimension or 384)
     if provider in {"sentence-transformers", "bge", "local"}:
         return SentenceTransformersProvider(settings.embedding_model, device=settings.embedding_device)
-    if provider == "openai":
-        return OpenAIEmbeddingProvider(settings.openai_api_key, settings.openai_embedding_model)
     raise ValueError(f"Unknown embedding provider: {settings.embedding_provider}")
 
 
