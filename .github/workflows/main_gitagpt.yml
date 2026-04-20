@@ -62,6 +62,7 @@ jobs:
         run: |
           test -f deploy.zip
           unzip -l deploy.zip | grep -E 'startup\.sh|backend/app/main\.py|backend/data/index/faiss\.index|backend/data/index/metadata\.json' >/dev/null
+          unzip -p deploy.zip startup.sh | grep -F "python -m uvicorn" >/dev/null
           echo "Archive size:"
           ls -lh deploy.zip
 
@@ -88,6 +89,9 @@ jobs:
           echo "Working directory: $(pwd)"
           ls -lah
           find . -maxdepth 4 -type f -name 'deploy.zip' -print
+          ZIP_PATH="$(find . -maxdepth 4 -type f -name 'deploy.zip' | head -n 1)"
+          test -n "$ZIP_PATH"
+          unzip -p "$ZIP_PATH" startup.sh | sed -n '1,20p'
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
