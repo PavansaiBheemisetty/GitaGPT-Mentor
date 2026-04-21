@@ -37,12 +37,15 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_api_key: str | None = None
     groq_model: str = "llama-3.1-8b-instant"
+    groq_timeout_seconds: int = 45
     modal_base_url: str = "https://api.us-west-2.modal.direct/v1"
     modal_api_key: str | None = None
     modal_model: str = "zai-org/GLM-5.1-FP8"
+    modal_timeout_seconds: int = 180
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str | None = None
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
+    openrouter_timeout_seconds: int = 60
     hf_token: str | None = None
 
     retrieval_top_k: int = 6
@@ -124,7 +127,31 @@ class Settings(BaseSettings):
         if value is None:
             return None
         normalized = str(value).strip()
+        if normalized.lower().startswith("bearer "):
+            normalized = normalized[7:].strip()
+        if len(normalized) >= 2 and (
+            (normalized.startswith('"') and normalized.endswith('"'))
+            or (normalized.startswith("'") and normalized.endswith("'"))
+        ):
+            normalized = normalized[1:-1].strip()
         return normalized or None
+
+    @field_validator(
+        "groq_timeout_seconds",
+        "modal_timeout_seconds",
+        "openrouter_timeout_seconds",
+        mode="before",
+    )
+    @classmethod
+    def normalize_timeout_seconds(cls, value: int | str | None) -> int:
+        if value is None:
+            return 60
+        timeout = int(value)
+        if timeout < 5:
+            return 5
+        if timeout > 600:
+            return 600
+        return timeout
 
 
 @lru_cache

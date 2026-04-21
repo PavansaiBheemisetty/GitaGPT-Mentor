@@ -139,7 +139,7 @@ Intent → Theme Mapping
 		↓
 Retriever (Embeddings + Vector Store + Rerank)
 		↓
-LLM Generation (Groq primary, Modal fallback, OpenRouter fallback, optional template mode)
+LLM Generation (Groq primary, OpenRouter fallback, Modal last fallback, optional template mode)
 		↓
 Contract Validation Layer
 		↓
@@ -173,7 +173,7 @@ frontend/
 - Frontend: Next.js 15 + React 19 + TypeScript
 - Embeddings: BGE (`sentence-transformers`) / OpenAI / hash fallback
 - Vector search: FAISS / simple local store
-- Generation: Groq (primary by default) / Modal fallback / OpenRouter fallback / template mode
+- Generation: Groq (primary by default) / OpenRouter fallback / Modal last fallback / template mode
 
 ---
 

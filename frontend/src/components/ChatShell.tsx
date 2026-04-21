@@ -83,8 +83,7 @@ export function ChatShell() {
       setSessions(data);
       setActiveSessionId((current) => current ?? data[0]?.id ?? null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not load sessions.";
-      setError(message);
+      setError(reportAndSoftenError("sessions:list", err, "Could not load sessions."));
     }
   }, []);
 
@@ -93,8 +92,7 @@ export function ChatShell() {
       const data = await listSessionMessages(token, sessionId);
       setMessages(data.map(toUiMessage));
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not load conversation.";
-      setError(message);
+      setError(reportAndSoftenError("messages:list", err, "Could not load conversation."));
     }
   }, []);
 
@@ -149,8 +147,7 @@ export function ChatShell() {
       setDraft("");
       setError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not create chat.";
-      setError(message);
+      setError(reportAndSoftenError("sessions:create", err, "Could not create chat."));
     }
   }
 
@@ -169,7 +166,6 @@ export function ChatShell() {
 
   async function handleDeleteSession(sessionId: string) {
     if (!accessToken) return;
-    console.log("DELETE CLICKED", sessionId);
     const confirmDelete = window.confirm("Delete this session?");
     if (!confirmDelete) return;
 
@@ -193,8 +189,7 @@ export function ChatShell() {
         setEditingSessionId(null);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not delete session.";
-      setError(message);
+      setError(reportAndSoftenError("sessions:delete", err, "Could not delete session."));
     }
   }
 
@@ -323,7 +318,7 @@ export function ChatShell() {
         }
 
         if (event.type === "error") {
-          setError(event.message || "Streaming failed.");
+          setError(reportAndSoftenError("chat:stream", event.message, "Streaming failed."));
           setDraft(content);
           setMessages((current) =>
             current.map((item) =>
@@ -593,4 +588,45 @@ function readableAuthError(message: string): string {
     return "This email already exists. Use magic-link sign-in; do not delete the user.";
   }
   return message;
+}
+
+function reportAndSoftenError(scope: string, error: unknown, fallback: string): string {
+  console.error(`[GitaGPT:${scope}]`, error);
+  const raw =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : fallback;
+  return softenUiError(raw, fallback);
+}
+
+function softenUiError(rawMessage: string, fallback: string): string {
+  const normalized = rawMessage.toLowerCase();
+
+  if (
+    normalized.includes("language model provider is unavailable") ||
+    normalized.includes("all llm providers failed") ||
+    (normalized.includes("forbidden") && normalized.includes("groq"))
+  ) {
+    return "LLM provider unavailable. Please try again shortly.";
+  }
+
+  if (normalized.includes("session persistence is unavailable") || normalized.includes("chat persistence is unavailable")) {
+    return "Chat storage is temporarily unavailable. Please retry.";
+  }
+
+  if (normalized.includes("authentication required")) {
+    return "Authentication required. Please sign in and retry.";
+  }
+
+  if (normalized.includes("streaming") || normalized.includes("connection")) {
+    return "Streaming interrupted. Please retry.";
+  }
+
+  if (rawMessage.length > 160) {
+    return fallback;
+  }
+
+  return rawMessage || fallback;
 }

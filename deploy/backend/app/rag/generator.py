@@ -165,7 +165,11 @@ class Generator:
                         logger.warning("GROQ_API_KEY not configured, skipping Groq.")
                         errors.append("Groq: API key not configured")
                         continue
-                    logger.info("Attempting LLM generation via Groq (%s).", self.settings.groq_model)
+                    logger.info(
+                        "Attempting LLM generation via Groq (%s), timeout=%ss.",
+                        self.settings.groq_model,
+                        self.settings.groq_timeout_seconds,
+                    )
                     return await self._groq(
                         question, chunks,
                         intent=intent, theme=theme, avoid_verses=avoid_verses,
@@ -176,7 +180,11 @@ class Generator:
                         logger.warning("MODAL_API_KEY not configured, skipping Modal.")
                         errors.append("Modal: API key not configured")
                         continue
-                    logger.info("Attempting LLM generation via Modal (%s).", self.settings.modal_model)
+                    logger.info(
+                        "Attempting LLM generation via Modal (%s), timeout=%ss.",
+                        self.settings.modal_model,
+                        self.settings.modal_timeout_seconds,
+                    )
                     return await self._modal(
                         question, chunks,
                         intent=intent, theme=theme, avoid_verses=avoid_verses,
@@ -187,7 +195,11 @@ class Generator:
                         logger.warning("OPENROUTER_API_KEY not configured, skipping OpenRouter.")
                         errors.append("OpenRouter: API key not configured")
                         continue
-                    logger.info("Attempting LLM generation via OpenRouter (%s).", self.settings.openrouter_model)
+                    logger.info(
+                        "Attempting LLM generation via OpenRouter (%s), timeout=%ss.",
+                        self.settings.openrouter_model,
+                        self.settings.openrouter_timeout_seconds,
+                    )
                     return await self._openrouter(
                         question,
                         chunks,
@@ -200,8 +212,9 @@ class Generator:
                 else:
                     errors.append(f"Unknown provider: {provider_name}")
             except Exception as exc:
-                logger.error("LLM provider %s failed: %s", provider_name, exc)
-                errors.append(f"{provider_name}: {exc}")
+                formatted = self._format_provider_exception(exc)
+                logger.error("LLM provider %s failed: %s", provider_name, formatted)
+                errors.append(f"{provider_name}: {formatted}")
 
         # All real providers failed — raise with diagnostic info, do NOT silently fall back to template.
         error_summary = "; ".join(errors)
@@ -217,14 +230,38 @@ class Generator:
             normalized = "openrouter"
 
         if normalized == "groq":
-            return ["groq", "modal", "openrouter"]
+            return ["groq", "openrouter", "modal"]
         if normalized == "modal":
-            return ["modal", "groq", "openrouter"]
+            return ["modal", "openrouter", "groq"]
         if normalized == "openrouter":
             return ["openrouter", "groq", "modal"]
 
         logger.warning("Unknown LLM_PROVIDER '%s'; using default failover order.", primary)
-        return ["groq", "modal", "openrouter"]
+        return ["groq", "openrouter", "modal"]
+
+    def _format_provider_exception(self, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code if exc.response else "unknown"
+            url = str(exc.request.url) if exc.request else "unknown"
+            body_preview = ""
+            if exc.response is not None:
+                body_preview = (exc.response.text or "").strip().replace("\n", " ")[:220]
+            parts = [f"HTTP {status}", f"url={url}"]
+            if body_preview:
+                parts.append(f"body={body_preview}")
+            return " | ".join(parts)
+
+        if isinstance(exc, httpx.RequestError):
+            url = str(exc.request.url) if exc.request else "unknown"
+            message = str(exc).strip()
+            if message:
+                return f"{exc.__class__.__name__}: {message} (url={url})"
+            return f"{exc.__class__.__name__} (url={url})"
+
+        message = str(exc).strip()
+        if message:
+            return message
+        return repr(exc)
 
     async def _modal(
         self,
@@ -241,6 +278,7 @@ class Generator:
             base_url=self.settings.modal_base_url,
             api_key=self.settings.modal_api_key,
             model=self.settings.modal_model,
+            timeout_seconds=self.settings.modal_timeout_seconds,
             question=question,
             chunks=chunks,
             intent=intent,
@@ -265,6 +303,7 @@ class Generator:
             base_url=self.settings.groq_base_url,
             api_key=self.settings.groq_api_key,
             model=self.settings.groq_model,
+            timeout_seconds=self.settings.groq_timeout_seconds,
             question=question,
             chunks=chunks,
             intent=intent,
@@ -289,6 +328,7 @@ class Generator:
             base_url=self.settings.openrouter_base_url,
             api_key=self.settings.openrouter_api_key,
             model=self.settings.openrouter_model,
+            timeout_seconds=self.settings.openrouter_timeout_seconds,
             question=question,
             chunks=chunks,
             intent=intent,
@@ -304,6 +344,7 @@ class Generator:
         base_url: str,
         api_key: str,
         model: str,
+        timeout_seconds: int,
         question: str,
         chunks: list[RetrievedChunk],
         intent: str,
@@ -338,7 +379,7 @@ class Generator:
             headers.update(extra_headers)
         url = f"{base_url.rstrip('/')}/chat/completions"
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(
                 url,
                 headers=headers,
