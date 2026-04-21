@@ -110,8 +110,8 @@ class ChatService:
                 cause=str(exc),
                 fix=(
                     "Set GROQ_API_KEY and GROQ_MODEL (primary). "
-                    "Configure MODAL_API_KEY and MODAL_MODEL as first fallback. "
-                    "Optionally set OPENROUTER_API_KEY and OPENROUTER_MODEL as an additional fallback."
+                    "Configure OPENROUTER_API_KEY and OPENROUTER_MODEL as first fallback. "
+                    "Configure MODAL_API_KEY and MODAL_MODEL as last fallback."
                 ),
             ) from exc
         citations = backend_citations(chunks)

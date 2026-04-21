@@ -53,6 +53,8 @@ def health() -> dict:
                     "model": settings.openrouter_model,
                     "endpoint_host": _endpoint_host(settings.openrouter_base_url),
                     "timeout_seconds": settings.openrouter_timeout_seconds,
+                    "reasoning_effort": settings.openrouter_reasoning_effort,
+                    "reasoning_exclude": settings.openrouter_reasoning_exclude,
                 },
             },
         },

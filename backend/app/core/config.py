@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
     openrouter_timeout_seconds: int = 60
+    openrouter_reasoning_effort: str = "none"
+    openrouter_reasoning_exclude: bool = True
     hf_token: str | None = None
 
     retrieval_top_k: int = 6
@@ -152,6 +154,29 @@ class Settings(BaseSettings):
         if timeout > 600:
             return 600
         return timeout
+
+    @field_validator("openrouter_reasoning_effort", mode="before")
+    @classmethod
+    def normalize_reasoning_effort(cls, value: str | None) -> str:
+        if value is None:
+            return "none"
+        normalized = str(value).strip().lower()
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        return normalized if normalized in allowed else "none"
+
+    @field_validator("openrouter_reasoning_exclude", mode="before")
+    @classmethod
+    def normalize_reasoning_exclude(cls, value: bool | str | None) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return True
 
 
 @lru_cache

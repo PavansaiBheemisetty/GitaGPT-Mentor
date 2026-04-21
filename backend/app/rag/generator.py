@@ -329,6 +329,12 @@ class Generator:
             api_key=self.settings.openrouter_api_key,
             model=self.settings.openrouter_model,
             timeout_seconds=self.settings.openrouter_timeout_seconds,
+            extra_payload={
+                "reasoning": {
+                    "effort": self.settings.openrouter_reasoning_effort,
+                    "exclude": self.settings.openrouter_reasoning_exclude,
+                }
+            },
             question=question,
             chunks=chunks,
             intent=intent,
@@ -345,6 +351,7 @@ class Generator:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        extra_payload: dict | None = None,
         question: str,
         chunks: list[RetrievedChunk],
         intent: str,
@@ -371,6 +378,8 @@ class Generator:
             "temperature": 0.35,
             "max_tokens": 420,
         }
+        if extra_payload:
+            payload.update(extra_payload)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -389,7 +398,10 @@ class Generator:
             data = response.json()
             content = _extract_chat_completions_content(data)
             if not content:
-                raise RuntimeError("No assistant content returned by chat completions endpoint.")
+                raise RuntimeError(
+                    "No assistant content returned by chat completions endpoint. "
+                    f"{_extract_empty_content_diagnostic(data)}"
+                )
 
             content = content.strip()
             if on_token:
@@ -727,15 +739,75 @@ def _normalize_section_headings(text: str) -> str:
 
 def _extract_chat_completions_content(payload: dict) -> str:
     choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                for field in ("content", "refusal"):
+                    text = _coerce_text_field(message.get(field))
+                    if text:
+                        return text
+
+            for field in ("text", "output_text"):
+                text = _coerce_text_field(first.get(field))
+                if text:
+                    return text
+
+    return _coerce_text_field(payload.get("output_text"))
+
+
+def _coerce_text_field(value: object) -> str:
+    if value is None:
         return ""
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            text = _coerce_text_field(item).strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    if isinstance(value, dict):
+        block_type = value.get("type")
+        if isinstance(block_type, str) and block_type.startswith("reasoning"):
+            return ""
+        for key in ("text", "content", "value", "output_text"):
+            if key in value:
+                text = _coerce_text_field(value.get(key)).strip()
+                if text:
+                    return text
+        return ""
+
+    return ""
+
+
+def _extract_empty_content_diagnostic(payload: dict) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        top_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+        return f"payload_keys={top_keys}"
+
     first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
+    message = first.get("message") if isinstance(first, dict) else None
+    finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
+
     if not isinstance(message, dict):
-        return ""
-    return str(message.get("content", "") or "")
+        return f"finish_reason={finish_reason}; message_type={type(message).__name__}"
+
+    content = message.get("content")
+    has_reasoning = bool(message.get("reasoning") or message.get("reasoning_details"))
+    has_refusal = bool(message.get("refusal"))
+    content_type = type(content).__name__
+    message_keys = sorted(message.keys())
+    return (
+        f"finish_reason={finish_reason}; content_type={content_type}; "
+        f"has_reasoning={has_reasoning}; has_refusal={has_refusal}; message_keys={message_keys}"
+    )
 
 
 def _stream_tokens(text: str) -> list[str]:
