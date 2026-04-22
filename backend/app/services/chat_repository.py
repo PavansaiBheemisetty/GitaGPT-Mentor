@@ -234,6 +234,32 @@ class ChatRepository:
             )
         return [ChatMessage(role=row["role"], content=row["content"]) for row in reversed(rows)]
 
+    async def load_full_history(self, user_id: str, session_id: str) -> list[ChatMessage]:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            owner = await conn.fetchval(
+                """
+                SELECT 1
+                FROM chat_sessions
+                WHERE id = $1::uuid AND user_id = $2::uuid
+                """,
+                session_id,
+                user_id,
+            )
+            if not owner:
+                return []
+            rows = await conn.fetch(
+                """
+                SELECT role, content
+                FROM messages
+                WHERE session_id = $1::uuid
+                ORDER BY timestamp ASC
+                LIMIT 2000
+                """,
+                session_id,
+            )
+        return [ChatMessage(role=row["role"], content=row["content"]) for row in rows]
+
     async def session_summary(self, user_id: str, session_id: str) -> str | None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:

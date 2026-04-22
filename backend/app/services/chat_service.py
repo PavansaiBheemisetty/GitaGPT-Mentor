@@ -12,7 +12,9 @@ from app.rag.generator import Generator
 from app.rag.intent_router import classify_query_intent, map_intent_to_theme
 from app.rag.retriever import Retriever
 from app.rag.vector_store import VectorStore
+from app.rag.prompt import SYSTEM_PROMPT
 from app.services.session_memory import ConversationVerseMemory
+from app.services.memory_builder import SessionMemoryBuilder
 
 if TYPE_CHECKING:
     from app.services.chat_repository import AuthUser, ChatRepository
@@ -28,6 +30,11 @@ class ChatService:
         self.retriever = Retriever(settings, self.embeddings, self.store)
         self.generator = Generator(settings)
         self.verse_memory = ConversationVerseMemory(window_size=28)
+        self.memory_builder = SessionMemoryBuilder(
+            max_chars=settings.session_memory_max_chars,
+            summary_max_chars=settings.session_memory_summary_chars,
+            recent_message_count=settings.session_memory_recent_messages,
+        )
 
     async def chat(
         self,
@@ -38,16 +45,11 @@ class ChatService:
     ) -> ChatResponse:
         request_id = str(uuid.uuid4())
         self._validate_request(request)
-        history, session_summary = await self._resolve_history_and_summary(request, user=user)
-        memory_context = self._build_memory_context(history, session_summary)
+        history = await self._resolve_history(request, user=user)
         intent_route = classify_query_intent(request.message, embeddings=self.embeddings)
 
-        provider = ProviderInfo(
-            embedding=self.embeddings.model_name,
-            llm=f"{self.settings.llm_provider}:{self._llm_model_name()}",
-        )
-
         if intent_route.intent == "out_of_scope":
+            provider = self._provider_info()
             response = ChatResponse(
                 request_id=request_id,
                 answer=(
@@ -76,6 +78,7 @@ class ChatService:
             avoid_verses=recent_verses,
         )
         if not chunks:
+            provider = self._provider_info()
             response = ChatResponse(
                 request_id=request_id,
                 answer=(
@@ -95,13 +98,19 @@ class ChatService:
             await self._persist_turn(user=user, request=request, response=response)
             return response
         try:
-            answer = await self.generator.generate(
+            memory_result = self.memory_builder.build(
+                system_prompt=SYSTEM_PROMPT,
+                history=history,
+                current_prompt="",
+            )
+            history_messages = memory_result.messages
+            generation = await self.generator.generate(
                 request.message,
                 chunks,
                 intent=intent_route.intent,
                 theme=theme,
                 avoid_verses=[f"{chapter}.{verse}" for chapter, verse in sorted(recent_verses)],
-                memory_context=memory_context,
+                history_messages=history_messages,
                 on_token=on_token,
             )
         except (httpx.HTTPError, RuntimeError) as exc:
@@ -110,7 +119,7 @@ class ChatService:
                 cause=str(exc),
                 fix=(
                     "Set GROQ_API_KEY and GROQ_MODEL (primary). "
-                    "Configure OPENROUTER_API_KEY and OPENROUTER_MODEL as first fallback. "
+                    "Configure OPENROUTER_API_KEY for the built-in fallback chain. "
                     "Configure MODAL_API_KEY and MODAL_MODEL as last fallback."
                 ),
             ) from exc
@@ -120,9 +129,14 @@ class ChatService:
         if not citations:
             warnings.append("trust_failure_no_valid_citations")
         self.verse_memory.remember(request.conversation_id, chunks)
+        provider = self._provider_info(
+            llm_provider=generation.provider,
+            llm_model=generation.model,
+            llm_attempts=generation.attempts,
+        )
         response = ChatResponse(
             request_id=request_id,
-            answer=answer,
+            answer=generation.answer,
             intent=intent_route.intent,
             theme=theme,
             citations=citations,
@@ -137,56 +151,55 @@ class ChatService:
     def _validate_request(self, request: ChatRequest) -> None:
         if len(request.message) > self.settings.max_message_chars:
             raise ValueError(f"message exceeds {self.settings.max_message_chars} characters")
-        if len(request.history) > self.settings.max_history_turns:
-            raise ValueError(f"history exceeds {self.settings.max_history_turns} turns")
         history_chars = sum(len(item.content) for item in request.history)
-        if history_chars > self.settings.max_history_chars:
-            raise ValueError(f"history exceeds {self.settings.max_history_chars} characters")
+        if history_chars > self.settings.session_memory_max_chars * 4:
+            raise ValueError("history exceeds allowed request payload size")
 
-    def _llm_model_name(self) -> str:
+    def _configured_llm_model_name(self) -> str:
         if self.settings.llm_provider == "groq":
             return self.settings.groq_model
         if self.settings.llm_provider == "modal":
             return self.settings.modal_model
         if self.settings.llm_provider in {"openrouter", "open-router"}:
-            return self.settings.openrouter_model
+            return "fallback-chain"
         return "template"
 
-    async def _resolve_history_and_summary(
+    def _provider_info(
+        self,
+        *,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        llm_attempts: list[str] | None = None,
+    ) -> ProviderInfo:
+        resolved_provider = llm_provider or self.settings.llm_provider
+        resolved_model = llm_model or self._configured_llm_model_name()
+        return ProviderInfo(
+            embedding=self.embeddings.model_name,
+            llm=f"{resolved_provider}:{resolved_model}",
+            llm_provider=resolved_provider,
+            llm_model=resolved_model,
+            llm_attempts=llm_attempts or [],
+        )
+
+    async def _resolve_history(
         self,
         request: ChatRequest,
         *,
         user: "AuthUser | None",
-    ) -> tuple[list[ChatMessage], str | None]:
-        history = request.history[-self.settings.memory_context_window :]
-        summary = None
+    ) -> list[ChatMessage]:
+        history = request.history
         if not user or not request.conversation_id or not self.repository or not self.repository.enabled:
-            return history, summary
+            return history
         try:
-            db_history = await self.repository.load_recent_history(
+            db_history = await self.repository.load_full_history(
                 user.id,
                 request.conversation_id,
-                limit=self.settings.memory_context_window,
             )
             if db_history:
                 history = db_history
-            summary = await self.repository.session_summary(user.id, request.conversation_id)
         except Exception:
-            return history, summary
-        return history, summary
-
-    def _build_memory_context(self, history: list[ChatMessage], summary: str | None) -> str | None:
-        context_lines: list[str] = []
-        if history:
-            context_lines.append("Recent turns:")
-            recent_history = history[-2:]
-            for item in recent_history:
-                speaker = "User" if item.role == "user" else "Assistant"
-                compact = " ".join(item.content.split())
-                context_lines.append(f"- {speaker}: {compact[:220]}")
-        if not context_lines:
-            return None
-        return "\n".join(context_lines)[:3000]
+            return history
+        return history
 
     async def _persist_turn(
         self,

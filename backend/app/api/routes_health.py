@@ -50,7 +50,7 @@ def health() -> dict:
                 },
                 "openrouter": {
                     "configured": _is_configured(settings.openrouter_api_key),
-                    "model": settings.openrouter_model,
+                    "model": "fallback-chain",
                     "endpoint_host": _endpoint_host(settings.openrouter_base_url),
                     "timeout_seconds": settings.openrouter_timeout_seconds,
                     "reasoning_effort": settings.openrouter_reasoning_effort,

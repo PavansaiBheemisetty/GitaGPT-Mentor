@@ -27,7 +27,7 @@
 
 html,
 body {
-  @apply h-full overflow-hidden bg-background text-foreground antialiased;
+  @apply h-full overflow-x-hidden bg-background text-foreground antialiased;
 }
 
 body > div {
@@ -38,6 +38,10 @@ body {
   background-image: radial-gradient(circle at 12% 18%, rgba(255, 215, 0, 0.12), transparent 28%),
     radial-gradient(circle at 82% 84%, rgba(92, 120, 255, 0.20), transparent 34%),
     linear-gradient(145deg, #05081c, #0a1740 38%, #201545 68%, #060718 100%);
+}
+
+:root {
+  --app-height: 100dvh;
 }
 
 html::before {
@@ -72,4 +76,13 @@ input {
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+.markdown-content {
+  min-width: 0;
+}
+
+.markdown-content * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

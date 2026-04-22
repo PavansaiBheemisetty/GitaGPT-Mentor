@@ -23,28 +23,33 @@ export function StreamDust({ active }: Props) {
   if (!active) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl z-0">
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden rounded-2xl">
       {PARTICLES.map((particle, index) => (
         <motion.span
           key={`dust-${index}`}
-          className="absolute h-[2px] w-[2px] rounded-full blur-[0.5px]"
+          className="absolute h-[3px] w-[3px] rounded-full blur-[0.4px] shadow-[0_0_14px_currentColor]"
           style={{ left: particle.x, top: particle.y, backgroundColor: particle.color }}
           initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ 
-            opacity: [0, 0.4, 0], 
-            y: [0, particle.yMove], 
+          animate={{
+            opacity: [0, 0.8, 0],
+            y: [0, particle.yMove],
             x: [0, particle.xMove],
-            scale: [0.8, 1.2, 0.8]
+            scale: [0.7, 1.35, 0.8]
           }}
-          transition={{ 
-            duration: particle.duration, 
-            repeat: Infinity, 
-            repeatType: "loop", 
+          transition={{
+            duration: particle.duration,
+            repeat: Infinity,
+            repeatType: "loop",
             delay: particle.delay,
             ease: "easeInOut"
           }}
         />
       ))}
+      <motion.div
+        className="absolute inset-y-[26%] left-[-12%] h-[2px] w-[22%] rounded-full bg-[linear-gradient(90deg,transparent,rgba(255,223,128,0.95),rgba(148,196,255,0.8),transparent)] blur-[1.4px]"
+        animate={{ x: ["0%", "520%"], opacity: [0, 0.95, 0] }}
+        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+      />
     </div>
   );
 }

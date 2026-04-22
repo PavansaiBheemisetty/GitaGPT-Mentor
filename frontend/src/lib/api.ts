@@ -100,6 +100,7 @@ interface StreamChatOptions {
   accessToken?: string;
   message: string;
   conversationId: string;
+  history?: ChatMessage[];
   topK?: number;
   onEvent: (event: ChatStreamEvent) => void;
   onClose?: () => void;
@@ -113,6 +114,7 @@ export function streamChat(options: StreamChatOptions): { close: () => void } {
       JSON.stringify({
         message: options.message,
         conversation_id: options.conversationId,
+        history: options.history || [],
         top_k: options.topK || 6,
         access_token: options.accessToken || null
       })

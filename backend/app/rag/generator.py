@@ -1,13 +1,15 @@
 import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import httpx
 
 from app.core.config import Settings
-from app.models.chat import RetrievedChunk
+from app.models.chat import ConversationMessage, RetrievedChunk
 from app.rag.prompt import SYSTEM_PROMPT, build_user_prompt
+from app.services.fallback_service import LlmTarget, is_retryable_provider_error, openrouter_fallback_chain
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,18 @@ PUNCHLINE_LIBRARY = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationResult:
+    answer: str
+    provider: str
+    model: str
+    attempts: list[str]
+
+    @property
+    def provider_label(self) -> str:
+        return f"{self.provider}:{self.model}"
+
+
 class Generator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -111,9 +125,9 @@ class Generator:
         intent: str,
         theme: str,
         avoid_verses: list[str],
-        memory_context: str | None = None,
+        history_messages: list[ConversationMessage] | None = None,
         on_token: Callable[[str], Awaitable[None]] | None = None,
-    ) -> str:
+    ) -> GenerationResult:
         provider = (self.settings.llm_provider or "groq").strip().lower()
         if provider == "open-router":
             provider = "openrouter"
@@ -122,42 +136,43 @@ class Generator:
             if on_token:
                 for token in _stream_tokens(answer):
                     await on_token(token)
-            return answer
+            return GenerationResult(answer=answer, provider="template", model="template", attempts=["template:template"])
 
-        # Real-provider failover chain. Do not auto-fallback to template in production.
-        raw = await self._generate_with_fallback(
+        prompt = build_user_prompt(
             question,
             chunks,
             intent=intent,
             theme=theme,
             avoid_verses=avoid_verses,
-            memory_context=memory_context,
-            on_token=None,
-            primary=provider,
+            memory_context=None,
         )
-
-        final_answer = _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
+        conversation_messages = [
+            *(history_messages or [ConversationMessage(role="system", content=SYSTEM_PROMPT)]),
+            ConversationMessage(role="user", content=prompt),
+        ]
+        raw = await self._generate_with_fallback(messages=conversation_messages, on_token=None, primary=provider)
+        final_answer = _enforce_contract(raw.answer, question=question, chunks=chunks, intent=intent, theme=theme)
         if on_token:
             for token in _stream_tokens(final_answer):
                 await on_token(token)
-        return final_answer
+        return GenerationResult(
+            answer=final_answer,
+            provider=raw.provider,
+            model=raw.model,
+            attempts=raw.attempts,
+        )
 
     async def _generate_with_fallback(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
         primary: str,
-    ) -> str:
-        """Try configured providers in deterministic order and fail loudly if all fail."""
+    ) -> GenerationResult:
         provider_order = self._provider_chain(primary)
-
         errors: list[str] = []
+        attempts: list[str] = []
+
         for provider_name in provider_order:
             try:
                 if provider_name == "groq":
@@ -165,63 +180,71 @@ class Generator:
                         logger.warning("GROQ_API_KEY not configured, skipping Groq.")
                         errors.append("Groq: API key not configured")
                         continue
-                    logger.info(
-                        "Attempting LLM generation via Groq (%s), timeout=%ss.",
-                        self.settings.groq_model,
-                        self.settings.groq_timeout_seconds,
-                    )
-                    return await self._groq(
-                        question, chunks,
-                        intent=intent, theme=theme, avoid_verses=avoid_verses,
-                        memory_context=memory_context, on_token=on_token,
-                    )
-                elif provider_name == "modal":
+                    target = LlmTarget(provider="groq", model=self.settings.groq_model)
+                    attempts.append(target.label)
+                    logger.info("Attempting LLM generation via %s.", target.label)
+                    answer = await self._groq(messages=messages, on_token=on_token)
+                    return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+
+                if provider_name == "modal":
                     if not self.settings.modal_api_key:
                         logger.warning("MODAL_API_KEY not configured, skipping Modal.")
                         errors.append("Modal: API key not configured")
                         continue
-                    logger.info(
-                        "Attempting LLM generation via Modal (%s), timeout=%ss.",
-                        self.settings.modal_model,
-                        self.settings.modal_timeout_seconds,
-                    )
-                    return await self._modal(
-                        question, chunks,
-                        intent=intent, theme=theme, avoid_verses=avoid_verses,
-                        memory_context=memory_context, on_token=on_token,
-                    )
-                elif provider_name == "openrouter":
-                    if not self.settings.openrouter_api_key:
-                        logger.warning("OPENROUTER_API_KEY not configured, skipping OpenRouter.")
-                        errors.append("OpenRouter: API key not configured")
-                        continue
-                    logger.info(
-                        "Attempting LLM generation via OpenRouter (%s), timeout=%ss.",
-                        self.settings.openrouter_model,
-                        self.settings.openrouter_timeout_seconds,
-                    )
-                    return await self._openrouter(
-                        question,
-                        chunks,
-                        intent=intent,
-                        theme=theme,
-                        avoid_verses=avoid_verses,
-                        memory_context=memory_context,
-                        on_token=on_token,
-                    )
-                else:
-                    errors.append(f"Unknown provider: {provider_name}")
+                    target = LlmTarget(provider="modal", model=self.settings.modal_model)
+                    attempts.append(target.label)
+                    logger.info("Attempting LLM generation via %s.", target.label)
+                    answer = await self._modal(messages=messages, on_token=on_token)
+                    return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+
+                if provider_name == "openrouter":
+                    return await self._openrouter_with_model_fallback(messages=messages, on_token=on_token, attempts=attempts)
+
+                errors.append(f"Unknown provider: {provider_name}")
             except Exception as exc:
                 formatted = self._format_provider_exception(exc)
                 logger.error("LLM provider %s failed: %s", provider_name, formatted)
                 errors.append(f"{provider_name}: {formatted}")
 
-        # All real providers failed — raise with diagnostic info, do NOT silently fall back to template.
         error_summary = "; ".join(errors)
         raise RuntimeError(
             "All LLM providers failed. "
             f"Requested primary={primary}; attempted={provider_order}; details={error_summary}. "
             "Set GROQ_API_KEY, MODAL_API_KEY, or OPENROUTER_API_KEY in your environment."
+        )
+
+    async def _openrouter_with_model_fallback(
+        self,
+        *,
+        messages: list[ConversationMessage],
+        on_token: Callable[[str], Awaitable[None]] | None,
+        attempts: list[str],
+    ) -> GenerationResult:
+        if not self.settings.openrouter_api_key:
+            raise RuntimeError("OpenRouter: API key not configured")
+
+        errors: list[str] = []
+        for target in openrouter_fallback_chain():
+            attempts.append(target.label)
+            logger.info("Attempting OpenRouter model %s.", target.model)
+            try:
+                answer = await self._openrouter(messages=messages, model=target.model, on_token=on_token)
+                if len(attempts) > 1:
+                    logger.info("OpenRouter fallback resolved with %s after attempts=%s", target.model, attempts)
+                return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+            except Exception as exc:
+                formatted = self._format_provider_exception(exc)
+                logger.warning("OpenRouter fallback attempt failed for %s: %s", target.model, formatted)
+                errors.append(f"{target.model}: {formatted}")
+                if not is_retryable_provider_error(exc):
+                    raise RuntimeError(
+                        "Non-retryable OpenRouter failure. "
+                        f"model={target.model}; details={formatted}"
+                    ) from exc
+
+        raise RuntimeError(
+            "All OpenRouter fallback models failed. "
+            f"attempts={attempts}; details={'; '.join(errors)}"
         )
 
     def _provider_chain(self, primary: str) -> list[str]:
@@ -265,13 +288,8 @@ class Generator:
 
     async def _modal(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
@@ -279,24 +297,14 @@ class Generator:
             api_key=self.settings.modal_api_key,
             model=self.settings.modal_model,
             timeout_seconds=self.settings.modal_timeout_seconds,
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
     async def _groq(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
@@ -304,30 +312,21 @@ class Generator:
             api_key=self.settings.groq_api_key,
             model=self.settings.groq_model,
             timeout_seconds=self.settings.groq_timeout_seconds,
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
     async def _openrouter(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
+        model: str,
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
             base_url=self.settings.openrouter_base_url,
             api_key=self.settings.openrouter_api_key,
-            model=self.settings.openrouter_model,
+            model=model,
             timeout_seconds=self.settings.openrouter_timeout_seconds,
             extra_payload={
                 "reasoning": {
@@ -335,12 +334,7 @@ class Generator:
                     "exclude": self.settings.openrouter_reasoning_exclude,
                 }
             },
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
@@ -351,30 +345,14 @@ class Generator:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        messages: list[ConversationMessage],
         extra_payload: dict | None = None,
-        question: str,
-        chunks: list[RetrievedChunk],
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
         extra_headers: dict[str, str] | None = None,
     ) -> str:
-        prompt = build_user_prompt(
-            question,
-            chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
-        )
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": [message.model_dump() for message in messages],
             "temperature": 0.35,
             "max_tokens": 420,
         }
@@ -389,11 +367,7 @@ class Generator:
         url = f"{base_url.rstrip('/')}/chat/completions"
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(
-                url,
-                headers=headers,
-                json=payload,
-            )
+            response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
             content = _extract_chat_completions_content(data)

@@ -54,6 +54,22 @@ export function ChatShell() {
   const shouldStickToBottom = useRef(true);
 
   useEffect(() => {
+    const syncViewport = () => {
+      document.documentElement.style.setProperty("--app-height", `${window.innerHeight}px`);
+    };
+    syncViewport();
+    if (window.innerWidth < 768) {
+      setIsSidebarOpen(false);
+    }
+    window.addEventListener("resize", syncViewport);
+    window.visualViewport?.addEventListener("resize", syncViewport);
+    return () => {
+      window.removeEventListener("resize", syncViewport);
+      window.visualViewport?.removeEventListener("resize", syncViewport);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!supabase) {
       setIsHydrating(false);
       return;
@@ -275,6 +291,10 @@ export function ChatShell() {
       accessToken: isAuthenticated ? accessToken || undefined : undefined,
       message: content,
       conversationId: sessionId,
+      history: messages
+        .filter((item) => item.role === "user" || item.role === "assistant")
+        .filter((item) => item.status !== "thinking")
+        .map((item) => ({ role: item.role, content: item.content })),
       onEvent: (event) => {
         if (event.type === "thinking") {
           setMessages((current) =>
@@ -342,12 +362,12 @@ export function ChatShell() {
   }
 
   if (isHydrating) {
-    return <main className="grid h-screen place-items-center overflow-hidden text-sm text-muted-foreground">Loading...</main>;
+    return <main className="grid h-[var(--app-height,100dvh)] place-items-center overflow-hidden text-sm text-muted-foreground">Loading...</main>;
   }
 
   if (supabase && !user) {
     return (
-      <main className="relative grid h-screen place-items-center overflow-hidden bg-background px-4">
+      <main className="relative grid h-[var(--app-height,100dvh)] place-items-center overflow-hidden bg-background px-4">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(122,136,255,0.28),transparent_50%),radial-gradient(ellipse_at_bottom_right,rgba(255,215,0,0.16),transparent_55%),linear-gradient(140deg,#060A20,#09103A_35%,#1A1B4A_68%,#100A2F)]" />
         <motion.section
           initial={{ opacity: 0, y: 16 }}
@@ -414,7 +434,7 @@ export function ChatShell() {
   const initials = user?.email?.slice(0, 2).toUpperCase() || "GG";
 
   return (
-    <main className="relative flex h-screen overflow-hidden bg-background">
+    <main className="relative flex h-[var(--app-height,100dvh)] overflow-hidden bg-background">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(255,215,0,0.12),transparent_40%),radial-gradient(circle_at_90%_80%,rgba(114,89,255,0.2),transparent_38%),linear-gradient(135deg,#070D2A,#0B1D51_40%,#141B4A_72%,#090A1C)]" />
 
       <AnimatePresence initial={false}>
@@ -423,7 +443,7 @@ export function ChatShell() {
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: 300, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
-            className="group relative z-20 flex h-full shrink-0 flex-col border-r border-border/70 bg-card/35 p-4 backdrop-blur-xl"
+            className="group absolute inset-y-0 left-0 z-30 flex h-full w-[min(82vw,300px)] shrink-0 flex-col border-r border-border/70 bg-card/85 p-4 backdrop-blur-xl md:relative md:w-[300px]"
             style={{ overflow: "hidden" }}
             aria-label="Recent chats"
           >
@@ -437,12 +457,17 @@ export function ChatShell() {
               New Chat
             </Button>
 
-            <ScrollArea className="flex-1 min-h-0 w-[267px]">
-              <div className="space-y-2 pr-4 pb-2">
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="space-y-2 pb-2 pr-3">
                 {sessions.map((session) => (
                   <div
                     key={session.id}
-                    onClick={() => setActiveSessionId(session.id)}
+                    onClick={() => {
+                      setActiveSessionId(session.id);
+                      if (window.innerWidth < 768) {
+                        setIsSidebarOpen(false);
+                      }
+                    }}
                     className={`group/item cursor-pointer w-full rounded-xl border px-3 py-3 text-left text-sm transition ${
                       activeSessionId === session.id
                         ? "border-accent/50 bg-accent/15 text-foreground"
@@ -504,7 +529,7 @@ export function ChatShell() {
               </div>
             </ScrollArea>
 
-            <div className="mt-4 rounded-xl border border-border/70 bg-background/45 p-3 shrink-0 w-[267px]">
+            <div className="mt-4 w-full shrink-0 rounded-xl border border-border/70 bg-background/45 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <Avatar>
@@ -521,6 +546,15 @@ export function ChatShell() {
         )}
       </AnimatePresence>
 
+      {isAuthenticated && isSidebarOpen ? (
+        <button
+          type="button"
+          aria-label="Close sidebar overlay"
+          className="absolute inset-0 z-20 bg-[#020511]/55 backdrop-blur-[2px] md:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      ) : null}
+
       <section className="relative z-10 flex h-full min-h-0 flex-1 flex-col overflow-hidden" aria-label="GitaGPT chat">
         <header className="border-border/70 bg-transparent px-4 py-4 sm:px-6 z-20 shrink-0">
           <div className="flex items-center gap-4">
@@ -535,7 +569,7 @@ export function ChatShell() {
           </div>
         </header>
 
-        <div ref={viewportRef} onScroll={onScrollMessages} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <div ref={viewportRef} onScroll={onScrollMessages} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
           <AnimatePresence mode="wait">
             {messages.length === 0 ? (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -550,7 +584,7 @@ export function ChatShell() {
           </AnimatePresence>
         </div>
 
-        <div className="border-t border-border/70 bg-card/45 px-4 pb-4 pt-3 backdrop-blur-xl sm:px-6">
+        <div className="sticky bottom-0 z-20 border-t border-border/70 bg-[linear-gradient(180deg,rgba(10,16,39,0.78),rgba(12,18,46,0.96))] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-6">
           <p aria-live="polite" className="min-h-5 text-xs text-rose-200">
             {error}
           </p>
