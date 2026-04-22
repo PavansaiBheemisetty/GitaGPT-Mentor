@@ -42,7 +42,7 @@ backend/data/fixtures/local/*
 !backend/data/fixtures/local/.gitkeep
 
 # Local agent docs
-
+TODOS.md
 AGENTS.md
 CLAUDE.md
-TODOS.md
+
