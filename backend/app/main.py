@@ -29,22 +29,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # ── Preload heavy resources at startup to eliminate cold-start latency ──
-    logger.info("🔥 Preloading embeddings model...")
-    try:
-        from app.api.deps import get_embeddings_provider
-        get_embeddings_provider()
-        logger.info("✅ Embeddings model preloaded.")
-    except Exception as exc:
-        logger.warning(
-            "⚠️  Embeddings preload failed: %s. Resources will load lazily on first request.",
-            exc,
-        )
-
+    # Preload only FAISS at startup; embeddings are loaded lazily on first chat.
     logger.info("🔥 Preloading FAISS retriever...")
     try:
-        from app.api.deps import get_retriever
-        get_retriever()
+        from app.api.deps import get_vector_store
+        get_vector_store()
         logger.info("✅ FAISS retriever preloaded.")
     except Exception as exc:
         logger.warning(
