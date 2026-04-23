@@ -4,11 +4,17 @@ from pydantic import BaseModel, Field
 
 
 Role = Literal["user", "assistant"]
+ConversationRole = Literal["system", "user", "assistant"]
 Confidence = Literal["sufficient", "insufficient", "error"]
 
 
 class ChatMessage(BaseModel):
     role: Role
+    content: str = Field(min_length=1)
+
+
+class ConversationMessage(BaseModel):
+    role: ConversationRole
     content: str = Field(min_length=1)
 
 
@@ -22,6 +28,7 @@ class ChatRequest(BaseModel):
 class ChatStreamRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+    history: list[ChatMessage] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1, le=12)
 
 
@@ -52,6 +59,9 @@ class RetrievedChunk(BaseModel):
 class ProviderInfo(BaseModel):
     embedding: str
     llm: str
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_attempts: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):

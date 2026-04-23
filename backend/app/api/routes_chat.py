@@ -222,7 +222,7 @@ async def stream_chat(websocket: WebSocket) -> None:
                     message=stream_request.message,
                     conversation_id=stream_request.conversation_id,
                     top_k=stream_request.top_k,
-                    history=[],
+                    history=stream_request.history,
                 ),
                 user=user,
                 on_token=send_token,

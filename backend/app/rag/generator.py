@@ -1,28 +1,30 @@
 import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import httpx
 
 from app.core.config import Settings
-from app.models.chat import RetrievedChunk
+from app.models.chat import ConversationMessage, RetrievedChunk
 from app.rag.prompt import SYSTEM_PROMPT, build_user_prompt
+from app.services.fallback_service import LlmTarget, is_retryable_provider_error, openrouter_fallback_chain
 
 logger = logging.getLogger(__name__)
 
 
 GENERIC_WELLNESS_SUBSTITUTIONS = {
-    r"\bself-care\b": "disciplined care of body and mind in service of dharma",
-    r"\bpractice self-compassion\b": "train the mind to become an ally through disciplined self-respect",
-    r"\bbe kind to yourself\b": "do not degrade yourself; train the mind as an ally",
-    r"\bexplore hobbies\b": "observe what your nature repeatedly returns to when pressure lifts",
-    r"\bexplore your interests\b": "observe what your nature repeatedly returns to when pressure lifts",
-    r"\btry new things\b": "test aligned duties and observe what sustains steadiness",
-    r"\bbuild relationships\b": "seek sattvic association that strengthens clarity over attachment",
-    r"\bset boundaries\b": "guard the gates of the senses with discernment",
-    r"\bfind alternative activities\b": "redirect restless energy into one duty done with steadiness",
-    r"\btake a break\b": "withdraw the senses briefly, then return to duty with steadiness",
+    r"\bself-care\b": "regulate the senses and maintain steadiness",
+    r"\bpractice self-compassion\b": "act without ownership and observe attachment",
+    r"\bbe kind to yourself\b": "rise above tamas and act without ownership",
+    r"\bexplore hobbies\b": "align with svadharma and observe what naturally grounds you",
+    r"\bexplore your interests\b": "align with svadharma and observe what naturally grounds you",
+    r"\btry new things\b": "test aligned duties and rise above tamas",
+    r"\bbuild relationships\b": "seek sattvic association that strengthens clarity",
+    r"\bset boundaries\b": "regulate the senses with discernment",
+    r"\bfind alternative activities\b": "redirect restless energy into one steady duty",
+    r"\btake a break\b": "withdraw the senses briefly, then return to duty",
 }
 
 GENERIC_PUNCHLINE_PHRASES = {
@@ -99,6 +101,18 @@ PUNCHLINE_LIBRARY = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationResult:
+    answer: str
+    provider: str
+    model: str
+    attempts: list[str]
+
+    @property
+    def provider_label(self) -> str:
+        return f"{self.provider}:{self.model}"
+
+
 class Generator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -111,9 +125,9 @@ class Generator:
         intent: str,
         theme: str,
         avoid_verses: list[str],
-        memory_context: str | None = None,
+        history_messages: list[ConversationMessage] | None = None,
         on_token: Callable[[str], Awaitable[None]] | None = None,
-    ) -> str:
+    ) -> GenerationResult:
         provider = (self.settings.llm_provider or "groq").strip().lower()
         if provider == "open-router":
             provider = "openrouter"
@@ -122,42 +136,50 @@ class Generator:
             if on_token:
                 for token in _stream_tokens(answer):
                     await on_token(token)
-            return answer
+            return GenerationResult(answer=answer, provider="template", model="template", attempts=["template:template"])
 
-        # Real-provider failover chain. Do not auto-fallback to template in production.
-        raw = await self._generate_with_fallback(
+        prompt = build_user_prompt(
             question,
             chunks,
             intent=intent,
             theme=theme,
             avoid_verses=avoid_verses,
-            memory_context=memory_context,
-            on_token=None,
-            primary=provider,
+            memory_context=None,
         )
-
-        final_answer = _enforce_contract(raw, question=question, chunks=chunks, intent=intent, theme=theme)
+        conversation_messages = [
+            *(history_messages or [ConversationMessage(role="system", content=SYSTEM_PROMPT)]),
+            ConversationMessage(role="user", content=prompt),
+        ]
+        raw = await self._generate_with_fallback(messages=conversation_messages, on_token=None, primary=provider)
+        final_answer = _enforce_contract(
+            raw.answer,
+            question=question,
+            chunks=chunks,
+            intent=intent,
+            theme=theme,
+            history_messages=history_messages,
+        )
         if on_token:
             for token in _stream_tokens(final_answer):
                 await on_token(token)
-        return final_answer
+        return GenerationResult(
+            answer=final_answer,
+            provider=raw.provider,
+            model=raw.model,
+            attempts=raw.attempts,
+        )
 
     async def _generate_with_fallback(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
         primary: str,
-    ) -> str:
-        """Try configured providers in deterministic order and fail loudly if all fail."""
+    ) -> GenerationResult:
         provider_order = self._provider_chain(primary)
-
         errors: list[str] = []
+        attempts: list[str] = []
+
         for provider_name in provider_order:
             try:
                 if provider_name == "groq":
@@ -165,63 +187,71 @@ class Generator:
                         logger.warning("GROQ_API_KEY not configured, skipping Groq.")
                         errors.append("Groq: API key not configured")
                         continue
-                    logger.info(
-                        "Attempting LLM generation via Groq (%s), timeout=%ss.",
-                        self.settings.groq_model,
-                        self.settings.groq_timeout_seconds,
-                    )
-                    return await self._groq(
-                        question, chunks,
-                        intent=intent, theme=theme, avoid_verses=avoid_verses,
-                        memory_context=memory_context, on_token=on_token,
-                    )
-                elif provider_name == "modal":
+                    target = LlmTarget(provider="groq", model=self.settings.groq_model)
+                    attempts.append(target.label)
+                    logger.info("Attempting LLM generation via %s.", target.label)
+                    answer = await self._groq(messages=messages, on_token=on_token)
+                    return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+
+                if provider_name == "modal":
                     if not self.settings.modal_api_key:
                         logger.warning("MODAL_API_KEY not configured, skipping Modal.")
                         errors.append("Modal: API key not configured")
                         continue
-                    logger.info(
-                        "Attempting LLM generation via Modal (%s), timeout=%ss.",
-                        self.settings.modal_model,
-                        self.settings.modal_timeout_seconds,
-                    )
-                    return await self._modal(
-                        question, chunks,
-                        intent=intent, theme=theme, avoid_verses=avoid_verses,
-                        memory_context=memory_context, on_token=on_token,
-                    )
-                elif provider_name == "openrouter":
-                    if not self.settings.openrouter_api_key:
-                        logger.warning("OPENROUTER_API_KEY not configured, skipping OpenRouter.")
-                        errors.append("OpenRouter: API key not configured")
-                        continue
-                    logger.info(
-                        "Attempting LLM generation via OpenRouter (%s), timeout=%ss.",
-                        self.settings.openrouter_model,
-                        self.settings.openrouter_timeout_seconds,
-                    )
-                    return await self._openrouter(
-                        question,
-                        chunks,
-                        intent=intent,
-                        theme=theme,
-                        avoid_verses=avoid_verses,
-                        memory_context=memory_context,
-                        on_token=on_token,
-                    )
-                else:
-                    errors.append(f"Unknown provider: {provider_name}")
+                    target = LlmTarget(provider="modal", model=self.settings.modal_model)
+                    attempts.append(target.label)
+                    logger.info("Attempting LLM generation via %s.", target.label)
+                    answer = await self._modal(messages=messages, on_token=on_token)
+                    return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+
+                if provider_name == "openrouter":
+                    return await self._openrouter_with_model_fallback(messages=messages, on_token=on_token, attempts=attempts)
+
+                errors.append(f"Unknown provider: {provider_name}")
             except Exception as exc:
                 formatted = self._format_provider_exception(exc)
                 logger.error("LLM provider %s failed: %s", provider_name, formatted)
                 errors.append(f"{provider_name}: {formatted}")
 
-        # All real providers failed — raise with diagnostic info, do NOT silently fall back to template.
         error_summary = "; ".join(errors)
         raise RuntimeError(
             "All LLM providers failed. "
             f"Requested primary={primary}; attempted={provider_order}; details={error_summary}. "
             "Set GROQ_API_KEY, MODAL_API_KEY, or OPENROUTER_API_KEY in your environment."
+        )
+
+    async def _openrouter_with_model_fallback(
+        self,
+        *,
+        messages: list[ConversationMessage],
+        on_token: Callable[[str], Awaitable[None]] | None,
+        attempts: list[str],
+    ) -> GenerationResult:
+        if not self.settings.openrouter_api_key:
+            raise RuntimeError("OpenRouter: API key not configured")
+
+        chain = openrouter_fallback_chain()
+        errors: list[str] = []
+        for index, target in enumerate(chain, start=1):
+            attempts.append(target.label)
+            logger.info("[OpenRouter] Trying model %d/%d: %s", index, len(chain), target.model)
+            try:
+                answer = await self._openrouter(messages=messages, model=target.model, on_token=on_token)
+                logger.info("[OpenRouter] ✅ Model %s succeeded.", target.model)
+                return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
+            except Exception as exc:
+                formatted = self._format_provider_exception(exc)
+                retryable = is_retryable_provider_error(exc)
+                logger.warning(
+                    "[OpenRouter] ❌ Model %s FAILED (retryable=%s): %s",
+                    target.model, retryable, formatted,
+                )
+                errors.append(f"{target.model}: {formatted}")
+                # Always continue to next model regardless of error type
+
+        raise RuntimeError(
+            "All OpenRouter fallback models failed. "
+            f"attempts={attempts}; details={'; '.join(errors)}"
         )
 
     def _provider_chain(self, primary: str) -> list[str]:
@@ -265,13 +295,8 @@ class Generator:
 
     async def _modal(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
@@ -279,24 +304,14 @@ class Generator:
             api_key=self.settings.modal_api_key,
             model=self.settings.modal_model,
             timeout_seconds=self.settings.modal_timeout_seconds,
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
     async def _groq(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
@@ -304,30 +319,21 @@ class Generator:
             api_key=self.settings.groq_api_key,
             model=self.settings.groq_model,
             timeout_seconds=self.settings.groq_timeout_seconds,
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
     async def _openrouter(
         self,
-        question: str,
-        chunks: list[RetrievedChunk],
         *,
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
+        messages: list[ConversationMessage],
+        model: str,
         on_token: Callable[[str], Awaitable[None]] | None,
     ) -> str:
         return await self._chat_completions_request(
             base_url=self.settings.openrouter_base_url,
             api_key=self.settings.openrouter_api_key,
-            model=self.settings.openrouter_model,
+            model=model,
             timeout_seconds=self.settings.openrouter_timeout_seconds,
             extra_payload={
                 "reasoning": {
@@ -335,12 +341,7 @@ class Generator:
                     "exclude": self.settings.openrouter_reasoning_exclude,
                 }
             },
-            question=question,
-            chunks=chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
+            messages=messages,
             on_token=on_token,
         )
 
@@ -351,30 +352,14 @@ class Generator:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        messages: list[ConversationMessage],
         extra_payload: dict | None = None,
-        question: str,
-        chunks: list[RetrievedChunk],
-        intent: str,
-        theme: str,
-        avoid_verses: list[str],
-        memory_context: str | None,
         on_token: Callable[[str], Awaitable[None]] | None,
         extra_headers: dict[str, str] | None = None,
     ) -> str:
-        prompt = build_user_prompt(
-            question,
-            chunks,
-            intent=intent,
-            theme=theme,
-            avoid_verses=avoid_verses,
-            memory_context=memory_context,
-        )
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": [message.model_dump() for message in messages],
             "temperature": 0.35,
             "max_tokens": 420,
         }
@@ -389,11 +374,7 @@ class Generator:
         url = f"{base_url.rstrip('/')}/chat/completions"
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(
-                url,
-                headers=headers,
-                json=payload,
-            )
+            response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
             content = _extract_chat_completions_content(data)
@@ -637,6 +618,7 @@ def _enforce_contract(
     chunks: list[RetrievedChunk],
     intent: str,
     theme: str,
+    history_messages: list[ConversationMessage] | None = None,
 ) -> str:
     text = _normalize_section_headings(answer.strip())
     if not text:
@@ -654,55 +636,55 @@ def _enforce_contract(
     for heading in headings:
         found = text.find(heading, current_index)
         if found == -1:
-            return _post_process_answer(text, question=question, theme=theme)
+            return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
         current_index = found + len(heading)
 
     words = len(text.replace("\n", " ").split())
     if words < 100 or words > 360:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if "**" in text:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return _template_answer(question, chunks, intent=intent, theme=theme)
     if lines[-1].lower().startswith("closing line"):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     sections = _extract_sections(text)
     if sections is None:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     real_life_mode = _is_real_life_query(intent=intent, theme=theme)
 
     if real_life_mode and not _is_theme_mechanism_valid(theme, sections["mechanism"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if real_life_mode and not _has_real_life_context(sections["practical"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if real_life_mode and not _is_theme_action_valid(theme, sections["practical"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     section_four_start = text.find("Practical Reflection (Actionable Steps)")
     section_five_start = text.find("Closing Line (Punchline)")
     if section_four_start == -1 or section_five_start == -1 or section_five_start <= section_four_start:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     practical_block = text[section_four_start:section_five_start]
     bullet_count = sum(1 for line in practical_block.splitlines() if _is_bullet_line(line))
     if bullet_count < 3 or bullet_count > 5:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     closing = sections.get("closing", "").strip()
     if not closing or "\n" in closing:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     if closing.lower().startswith("closing"):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     if not _is_italic_line(closing):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
-    return _post_process_answer(text, question=question, theme=theme)
+    return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
 
 def _normalize_section_headings(text: str) -> str:
@@ -844,7 +826,9 @@ def _clean_anchor_excerpt(chunks: list[RetrievedChunk], *, max_chars: int) -> st
     return ""
 
 
-def _post_process_answer(text: str, *, question: str, theme: str | None = None) -> str:
+def _post_process_answer(
+    text: str, *, question: str, theme: str | None = None, history_messages: list[ConversationMessage] | None = None
+) -> str:
     polished = _normalize_section_headings(text)
     polished = _strip_malformed_asterisk_prefixes(polished)
     # Global cleanup of malformed markdown artifacts like "**." or "*."
@@ -857,11 +841,15 @@ def _post_process_answer(text: str, *, question: str, theme: str | None = None) 
     polished = _strip_punchline_label(polished)
     polished = _normalize_closing_line(polished)
     polished = _strip_anchor_lines(polished)
-    polished = _rebuild_five_section_output(polished, question=question, theme=theme)
+    polished = _rebuild_five_section_output(
+        polished, question=question, theme=theme, history_messages=history_messages
+    )
     return polished
 
 
-def _rebuild_five_section_output(text: str, *, question: str, theme: str | None) -> str:
+def _rebuild_five_section_output(
+    text: str, *, question: str, theme: str | None, history_messages: list[ConversationMessage] | None = None
+) -> str:
     sections = _extract_sections(text)
     if sections is None:
         return text
@@ -875,6 +863,7 @@ def _rebuild_five_section_output(text: str, *, question: str, theme: str | None)
         previous_sections=[insight, wisdom, mechanism, practical],
         question=question,
         theme=theme,
+        history_messages=history_messages,
     )
 
     return (
@@ -956,15 +945,36 @@ def _normalize_closing_phrase(
     previous_sections: list[str],
     question: str,
     theme: str | None,
+    history_messages: list[ConversationMessage] | None = None,
 ) -> str:
     compact = " ".join(text.replace("\n", " ").split())
     candidate = _clean_punchline(compact)
     sentence = _first_sentence(candidate)
+    past_punchlines = _extract_past_punchlines(history_messages)
 
-    if _should_regenerate_punchline(sentence, previous_sections):
-        sentence = _generate_new_punchline(question=question, theme=theme, previous_sections=previous_sections)
+    if _should_regenerate_punchline(sentence, previous_sections, past_punchlines=past_punchlines):
+        sentence = _generate_new_punchline(
+            question=question, theme=theme, previous_sections=previous_sections, past_punchlines=past_punchlines
+        )
 
     return f"*{sentence}*"
+
+
+def _extract_past_punchlines(history_messages: list[ConversationMessage] | None) -> list[str]:
+    if not history_messages:
+        return []
+    past_punchlines = []
+    # iterate backwards to get the most recent ones
+    for msg in reversed(history_messages):
+        if msg.role == "assistant":
+            parts = msg.content.split("Closing Line (Punchline)")
+            if len(parts) > 1:
+                pl = _clean_punchline(parts[-1])
+                if pl:
+                    past_punchlines.append(pl)
+        if len(past_punchlines) >= 5:
+            break
+    return past_punchlines
 
 
 def _normalize_repetitive_context_phrase(text: str, *, question: str) -> str:
@@ -1232,7 +1242,9 @@ def _derive_problem_clause(question: str) -> str:
     return "attachment and outcome-fear disturb clear action in the present moment."
 
 
-def _should_regenerate_punchline(sentence: str, previous_sections: list[str]) -> bool:
+def _should_regenerate_punchline(
+    sentence: str, previous_sections: list[str], past_punchlines: list[str] | None = None
+) -> bool:
     if not sentence:
         return True
     lowered = sentence.lower().strip().rstrip(".!?")
@@ -1247,6 +1259,33 @@ def _should_regenerate_punchline(sentence: str, previous_sections: list[str]) ->
         return True
     if _punchline_repeats_previous(sentence, previous_sections):
         return True
+    
+    if past_punchlines:
+        for past_pl in past_punchlines:
+            if _is_too_similar(sentence, past_pl):
+                return True
+                
+    return False
+
+def _is_too_similar(sentence1: str, sentence2: str) -> bool:
+    s1_words = [word for word in re.findall(r"[a-z]+", _normalize_compare_text(sentence1)) if len(word) > 2]
+    s2_words = [word for word in re.findall(r"[a-z]+", _normalize_compare_text(sentence2)) if len(word) > 2]
+    if not s1_words or not s2_words:
+        return False
+        
+    s1_set = set(s1_words)
+    s2_set = set(s2_words)
+    overlap = len(s1_set & s2_set)
+    # If 50% of the words are the same, reject
+    if overlap >= max(3, int(min(len(s1_set), len(s2_set)) * 0.5)):
+        return True
+        
+    # Check bigram overlap
+    s1_bigrams = {f"{s1_words[i]} {s1_words[i+1]}" for i in range(len(s1_words)-1)}
+    s2_bigrams = {f"{s2_words[i]} {s2_words[i+1]}" for i in range(len(s2_words)-1)}
+    if len(s1_bigrams & s2_bigrams) >= 2:
+        return True
+        
     return False
 
 
@@ -1312,7 +1351,9 @@ def _normalize_compare_text(text: str) -> str:
     return " ".join(lowered.split())
 
 
-def _generate_new_punchline(*, question: str, theme: str | None, previous_sections: list[str]) -> str:
+def _generate_new_punchline(
+    *, question: str, theme: str | None, previous_sections: list[str], past_punchlines: list[str] | None = None
+) -> str:
     key = _punchline_theme_key(question=question, theme=theme)
     candidates = list(PUNCHLINE_LIBRARY.get(key, [])) + PUNCHLINE_LIBRARY["default"]
     seed = _stable_index(question, f"punchline:{key}")
@@ -1320,7 +1361,7 @@ def _generate_new_punchline(*, question: str, theme: str | None, previous_sectio
     for offset in range(len(candidates)):
         candidate = candidates[(seed + offset) % len(candidates)]
         cleaned = _clean_punchline(candidate)
-        if _should_regenerate_punchline(cleaned, previous_sections):
+        if _should_regenerate_punchline(cleaned, previous_sections, past_punchlines=past_punchlines):
             continue
         return cleaned
 

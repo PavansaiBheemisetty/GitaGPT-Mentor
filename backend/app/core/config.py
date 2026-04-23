@@ -44,8 +44,7 @@ class Settings(BaseSettings):
     modal_timeout_seconds: int = 180
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str | None = None
-    openrouter_model: str = "meta-llama/llama-3.1-8b-instruct:free"
-    openrouter_timeout_seconds: int = 60
+    openrouter_timeout_seconds: int = 90
     openrouter_reasoning_effort: str = "none"
     openrouter_reasoning_exclude: bool = True
     hf_token: str | None = None
@@ -56,6 +55,9 @@ class Settings(BaseSettings):
     max_history_turns: int = 6
     max_history_chars: int = 8000
     memory_context_window: int = 5
+    session_memory_max_chars: int = 14000
+    session_memory_summary_chars: int = 1800
+    session_memory_recent_messages: int = 8
     stream_word_delay_ms: int = 16
     allow_empty_index: bool = False
 

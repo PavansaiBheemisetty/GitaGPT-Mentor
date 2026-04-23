@@ -6,7 +6,7 @@ import type { Components } from "react-markdown";
 
 import type { UiMessage } from "../lib/types";
 import { CitationList } from "./CitationList";
-import { StreamDust } from "./StreamDust";
+import { StreamingRenderer } from "./StreamingRenderer";
 
 const WAITING_PHRASES = [
   "Listening to your question...",
@@ -274,7 +274,7 @@ export function MessageBubble({ message }: { message: UiMessage }) {
 
   return (
     <article
-      className={`relative w-full rounded-2xl border px-5 py-4 shadow-sm backdrop-blur-sm transition-all ${
+      className={`relative min-w-0 w-full overflow-hidden rounded-2xl border px-5 py-4 shadow-sm backdrop-blur-sm transition-all ${
         isAssistant
           ? "border-border/60 bg-card/60 text-foreground"
           : "border-white/10 bg-[linear-gradient(135deg,rgba(17,23,54,0.94),rgba(24,30,66,0.92))] text-white"
@@ -284,8 +284,10 @@ export function MessageBubble({ message }: { message: UiMessage }) {
 
       {message.status === "thinking" ? (
         <ThinkingIndicator />
+      ) : isAssistant && isStreaming ? (
+        <StreamingRenderer content={message.content} />
       ) : (
-        <div className={`message-container markdown-content break-words text-sm sm:text-[15px] ${isAssistant ? "opacity-90" : "opacity-100 font-normal"}`}>
+        <div className={`message-container markdown-content min-w-0 break-words text-sm sm:text-[15px] ${isAssistant ? "opacity-90" : "opacity-100 font-normal"}`}>
           <div className="flex flex-col">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {renderedMarkdown}
@@ -293,8 +295,6 @@ export function MessageBubble({ message }: { message: UiMessage }) {
           </div>
         </div>
       )}
-
-      {isAssistant && <StreamDust active={isStreaming} />}
 
       {response ? (
         <>
