@@ -24,10 +24,29 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("hpack").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # ── Preload heavy resources at startup to eliminate cold-start latency ──
+    logger.info("🔥 Preloading embeddings model...")
+    logger.info("🔥 Preloading FAISS retriever...")
+    try:
+        # get_chat_service() is @lru_cache — calling it here populates the
+        # singleton, which internally loads the HF embeddings model + FAISS
+        # index into memory.  Subsequent request-time calls return instantly.
+        from app.api.deps import get_chat_service
+        get_chat_service()
+        logger.info("✅ Startup preload complete.")
+    except Exception:
+        logger.warning(
+            "⚠️  Startup preload skipped (index or model not available). "
+            "Resources will load lazily on first request."
+        )
+
     yield
+
     repository = get_chat_repository()
     await repository.close()
 
