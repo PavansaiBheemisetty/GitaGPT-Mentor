@@ -24,8 +24,49 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "GitaGPT",
-  description: "Grounded Bhagavad Gita study assistant"
+  metadataBase: new URL("https://gitagpt.tech"),
+  title: {
+    default: "GitaGPT — Divine Guidance",
+    template: "%s | GitaGPT",
+  },
+  description:
+    "A Krishna-inspired AI mentor grounded in Bhagavad Gita teachings to guide you through life, purpose, and inner conflict.",
+  applicationName: "GitaGPT",
+  alternates: {
+    canonical: "https://gitagpt.tech",
+  },
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  manifest: "/manifest.webmanifest",
+  openGraph: {
+    title: "GitaGPT — Ancient Wisdom. Modern Clarity.",
+    description:
+      "A Krishna-inspired AI mentor grounded in Bhagavad Gita teachings to guide you through life, purpose, and inner conflict.",
+    url: "https://gitagpt.tech",
+    siteName: "GitaGPT",
+    type: "website",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "GitaGPT - Ancient Wisdom. Modern Clarity.",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "GitaGPT — Ancient Wisdom. Modern Clarity.",
+    description:
+      "A Krishna-inspired AI mentor grounded in Bhagavad Gita teachings to guide you through life, purpose, and inner conflict.",
+    images: ["/og-image.png"],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
