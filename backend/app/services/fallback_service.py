@@ -1,8 +1,18 @@
+"""OpenRouter fallback chain and retryable-error detection.
+
+The model fallback order is hardcoded here — no .env variable needed.
+When a model fails due to rate-limits, timeouts, 5xx, quota errors, or
+provider unavailability the next model in the chain is tried automatically.
+"""
+
 from dataclasses import dataclass
 import json
+import logging
 from typing import Iterable
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,14 +25,16 @@ class LlmTarget:
         return f"{self.provider}:{self.model}"
 
 
+# ── Hardcoded OpenRouter fallback chain (order matters) ───────────────
 OPENROUTER_FALLBACK_CHAIN: tuple[LlmTarget, ...] = (
     LlmTarget(provider="openrouter", model="z-ai/glm-4.5-air:free"),
-    LlmTarget(provider="openrouter", model="openai/gpt-oss-120b:free"),
-    LlmTarget(provider="openrouter", model="mistralai/mistral-nemo:exacto"),
     LlmTarget(provider="openrouter", model="nvidia/nemotron-3-super-120b-a12b:free"),
+    LlmTarget(provider="openrouter", model="mistralai/mistral-nemo:exacto"),
+    LlmTarget(provider="openrouter", model="openai/gpt-oss-120b:free"),
     LlmTarget(provider="openrouter", model="meta-llama/llama-3-8b-instruct:nitro"),
 )
 
+# ── Error markers that indicate a retryable provider failure ──────────
 RETRYABLE_ERROR_MARKERS = (
     "rate limit",
     "rate_limit",
@@ -33,14 +45,20 @@ RETRYABLE_ERROR_MARKERS = (
     "service unavailable",
     "temporarily unavailable",
     "upstream",
+    "overloaded",
+    "capacity",
+    "throttle",
+    "too many requests",
 )
 
 
 def openrouter_fallback_chain() -> tuple[LlmTarget, ...]:
+    """Return the hardcoded OpenRouter model fallback chain."""
     return OPENROUTER_FALLBACK_CHAIN
 
 
 def is_retryable_provider_error(exc: Exception) -> bool:
+    """Decide whether *exc* represents a transient provider failure worth retrying."""
     if isinstance(exc, httpx.TimeoutException):
         return True
 
@@ -59,6 +77,8 @@ def is_retryable_provider_error(exc: Exception) -> bool:
 
     return _contains_retryable_marker((str(exc),))
 
+
+# ── Internal helpers ──────────────────────────────────────────────────
 
 def _contains_retryable_marker(values: Iterable[str]) -> bool:
     haystack = " ".join(value.lower() for value in values if value).strip()

@@ -1,8 +1,11 @@
 import hashlib
+import logging
 import math
 from abc import ABC, abstractmethod
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
@@ -18,6 +21,7 @@ class HashEmbeddingProvider(EmbeddingProvider):
     def __init__(self, dimension: int = 384) -> None:
         self.model_name = "hash-local-dev"
         self.dimension = dimension
+        logger.info("[Embeddings] Hash fallback provider initialized (dim=%d).", dimension)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [_normalize(_hash_vector(text, self.dimension)) for text in texts]
@@ -31,6 +35,10 @@ class SentenceTransformersProvider(EmbeddingProvider):
             raise RuntimeError(
                 "sentence-transformers is not installed. Install backend dependencies first."
             ) from exc
+        logger.info(
+            "[Embeddings] Loading HF model '%s' into RAM on device='%s'...",
+            model_name, device,
+        )
         self.model_name = model_name
         self._model = SentenceTransformer(model_name, device=device)
         # sentence-transformers renamed this method; keep backward compatibility.
@@ -38,6 +46,10 @@ class SentenceTransformersProvider(EmbeddingProvider):
             self.dimension = int(self._model.get_embedding_dimension())
         else:
             self.dimension = int(self._model.get_sentence_embedding_dimension())
+        logger.info(
+            "[Embeddings] ✅ HF model '%s' loaded into RAM successfully (dim=%d, device=%s).",
+            model_name, self.dimension, device,
+        )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         vectors = self._model.encode(
@@ -52,8 +64,10 @@ class SentenceTransformersProvider(EmbeddingProvider):
 def create_embedding_provider(settings: Settings) -> EmbeddingProvider:
     provider = settings.embedding_provider.lower()
     if provider in {"hash", "local-hash"}:
+        logger.info("[Embeddings] Using hash fallback provider.")
         return HashEmbeddingProvider(dimension=settings.embedding_dimension or 384)
     if provider in {"sentence-transformers", "bge", "local"}:
+        logger.info("[Embeddings] Creating sentence-transformers provider for model '%s'.", settings.embedding_model)
         return SentenceTransformersProvider(settings.embedding_model, device=settings.embedding_device)
     raise ValueError(f"Unknown embedding provider: {settings.embedding_provider}")
 

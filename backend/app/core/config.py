@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     modal_timeout_seconds: int = 180
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str | None = None
-    openrouter_timeout_seconds: int = 60
+    openrouter_timeout_seconds: int = 90
     openrouter_reasoning_effort: str = "none"
     openrouter_reasoning_exclude: bool = True
     hf_token: str | None = None

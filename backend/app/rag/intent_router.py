@@ -322,6 +322,15 @@ LIFE_GUIDANCE_HINTS = {
     "phone addiction",
     "instagram",
     "reels",
+    "karma",
+    "punish",
+    "punishing",
+    "punishment",
+    "jealous",
+    "jealousy",
+    "loss",
+    "ex",
+    "breakup",
 }
 
 NON_LIFE_TASK_HINTS = {
@@ -383,6 +392,11 @@ RELATIONAL_LOW_HINTS = {
     "unwanted",
     "memories",
     "replaying",
+    "ex",
+    "jealous",
+    "jealousy",
+    "punishment",
+    "karma",
 }
 
 EMOTIONAL_HIGH_HINTS = {

@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 GENERIC_WELLNESS_SUBSTITUTIONS = {
-    r"\bself-care\b": "disciplined care of body and mind in service of dharma",
-    r"\bpractice self-compassion\b": "train the mind to become an ally through disciplined self-respect",
-    r"\bbe kind to yourself\b": "do not degrade yourself; train the mind as an ally",
-    r"\bexplore hobbies\b": "observe what your nature repeatedly returns to when pressure lifts",
-    r"\bexplore your interests\b": "observe what your nature repeatedly returns to when pressure lifts",
-    r"\btry new things\b": "test aligned duties and observe what sustains steadiness",
-    r"\bbuild relationships\b": "seek sattvic association that strengthens clarity over attachment",
-    r"\bset boundaries\b": "guard the gates of the senses with discernment",
-    r"\bfind alternative activities\b": "redirect restless energy into one duty done with steadiness",
-    r"\btake a break\b": "withdraw the senses briefly, then return to duty with steadiness",
+    r"\bself-care\b": "regulate the senses and maintain steadiness",
+    r"\bpractice self-compassion\b": "act without ownership and observe attachment",
+    r"\bbe kind to yourself\b": "rise above tamas and act without ownership",
+    r"\bexplore hobbies\b": "align with svadharma and observe what naturally grounds you",
+    r"\bexplore your interests\b": "align with svadharma and observe what naturally grounds you",
+    r"\btry new things\b": "test aligned duties and rise above tamas",
+    r"\bbuild relationships\b": "seek sattvic association that strengthens clarity",
+    r"\bset boundaries\b": "regulate the senses with discernment",
+    r"\bfind alternative activities\b": "redirect restless energy into one steady duty",
+    r"\btake a break\b": "withdraw the senses briefly, then return to duty",
 }
 
 GENERIC_PUNCHLINE_PHRASES = {
@@ -151,7 +151,14 @@ class Generator:
             ConversationMessage(role="user", content=prompt),
         ]
         raw = await self._generate_with_fallback(messages=conversation_messages, on_token=None, primary=provider)
-        final_answer = _enforce_contract(raw.answer, question=question, chunks=chunks, intent=intent, theme=theme)
+        final_answer = _enforce_contract(
+            raw.answer,
+            question=question,
+            chunks=chunks,
+            intent=intent,
+            theme=theme,
+            history_messages=history_messages,
+        )
         if on_token:
             for token in _stream_tokens(final_answer):
                 await on_token(token)
@@ -223,24 +230,24 @@ class Generator:
         if not self.settings.openrouter_api_key:
             raise RuntimeError("OpenRouter: API key not configured")
 
+        chain = openrouter_fallback_chain()
         errors: list[str] = []
-        for target in openrouter_fallback_chain():
+        for index, target in enumerate(chain, start=1):
             attempts.append(target.label)
-            logger.info("Attempting OpenRouter model %s.", target.model)
+            logger.info("[OpenRouter] Trying model %d/%d: %s", index, len(chain), target.model)
             try:
                 answer = await self._openrouter(messages=messages, model=target.model, on_token=on_token)
-                if len(attempts) > 1:
-                    logger.info("OpenRouter fallback resolved with %s after attempts=%s", target.model, attempts)
+                logger.info("[OpenRouter] ✅ Model %s succeeded.", target.model)
                 return GenerationResult(answer=answer, provider=target.provider, model=target.model, attempts=list(attempts))
             except Exception as exc:
                 formatted = self._format_provider_exception(exc)
-                logger.warning("OpenRouter fallback attempt failed for %s: %s", target.model, formatted)
+                retryable = is_retryable_provider_error(exc)
+                logger.warning(
+                    "[OpenRouter] ❌ Model %s FAILED (retryable=%s): %s",
+                    target.model, retryable, formatted,
+                )
                 errors.append(f"{target.model}: {formatted}")
-                if not is_retryable_provider_error(exc):
-                    raise RuntimeError(
-                        "Non-retryable OpenRouter failure. "
-                        f"model={target.model}; details={formatted}"
-                    ) from exc
+                # Always continue to next model regardless of error type
 
         raise RuntimeError(
             "All OpenRouter fallback models failed. "
@@ -611,6 +618,7 @@ def _enforce_contract(
     chunks: list[RetrievedChunk],
     intent: str,
     theme: str,
+    history_messages: list[ConversationMessage] | None = None,
 ) -> str:
     text = _normalize_section_headings(answer.strip())
     if not text:
@@ -628,55 +636,55 @@ def _enforce_contract(
     for heading in headings:
         found = text.find(heading, current_index)
         if found == -1:
-            return _post_process_answer(text, question=question, theme=theme)
+            return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
         current_index = found + len(heading)
 
     words = len(text.replace("\n", " ").split())
     if words < 100 or words > 360:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if "**" in text:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return _template_answer(question, chunks, intent=intent, theme=theme)
     if lines[-1].lower().startswith("closing line"):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     sections = _extract_sections(text)
     if sections is None:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     real_life_mode = _is_real_life_query(intent=intent, theme=theme)
 
     if real_life_mode and not _is_theme_mechanism_valid(theme, sections["mechanism"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if real_life_mode and not _has_real_life_context(sections["practical"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     if real_life_mode and not _is_theme_action_valid(theme, sections["practical"]):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     section_four_start = text.find("Practical Reflection (Actionable Steps)")
     section_five_start = text.find("Closing Line (Punchline)")
     if section_four_start == -1 or section_five_start == -1 or section_five_start <= section_four_start:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     practical_block = text[section_four_start:section_five_start]
     bullet_count = sum(1 for line in practical_block.splitlines() if _is_bullet_line(line))
     if bullet_count < 3 or bullet_count > 5:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
     closing = sections.get("closing", "").strip()
     if not closing or "\n" in closing:
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     if closing.lower().startswith("closing"):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
     if not _is_italic_line(closing):
-        return _post_process_answer(text, question=question, theme=theme)
+        return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
-    return _post_process_answer(text, question=question, theme=theme)
+    return _post_process_answer(text, question=question, theme=theme, history_messages=history_messages)
 
 
 def _normalize_section_headings(text: str) -> str:
@@ -818,7 +826,9 @@ def _clean_anchor_excerpt(chunks: list[RetrievedChunk], *, max_chars: int) -> st
     return ""
 
 
-def _post_process_answer(text: str, *, question: str, theme: str | None = None) -> str:
+def _post_process_answer(
+    text: str, *, question: str, theme: str | None = None, history_messages: list[ConversationMessage] | None = None
+) -> str:
     polished = _normalize_section_headings(text)
     polished = _strip_malformed_asterisk_prefixes(polished)
     # Global cleanup of malformed markdown artifacts like "**." or "*."
@@ -831,11 +841,15 @@ def _post_process_answer(text: str, *, question: str, theme: str | None = None) 
     polished = _strip_punchline_label(polished)
     polished = _normalize_closing_line(polished)
     polished = _strip_anchor_lines(polished)
-    polished = _rebuild_five_section_output(polished, question=question, theme=theme)
+    polished = _rebuild_five_section_output(
+        polished, question=question, theme=theme, history_messages=history_messages
+    )
     return polished
 
 
-def _rebuild_five_section_output(text: str, *, question: str, theme: str | None) -> str:
+def _rebuild_five_section_output(
+    text: str, *, question: str, theme: str | None, history_messages: list[ConversationMessage] | None = None
+) -> str:
     sections = _extract_sections(text)
     if sections is None:
         return text
@@ -849,6 +863,7 @@ def _rebuild_five_section_output(text: str, *, question: str, theme: str | None)
         previous_sections=[insight, wisdom, mechanism, practical],
         question=question,
         theme=theme,
+        history_messages=history_messages,
     )
 
     return (
@@ -930,15 +945,36 @@ def _normalize_closing_phrase(
     previous_sections: list[str],
     question: str,
     theme: str | None,
+    history_messages: list[ConversationMessage] | None = None,
 ) -> str:
     compact = " ".join(text.replace("\n", " ").split())
     candidate = _clean_punchline(compact)
     sentence = _first_sentence(candidate)
+    past_punchlines = _extract_past_punchlines(history_messages)
 
-    if _should_regenerate_punchline(sentence, previous_sections):
-        sentence = _generate_new_punchline(question=question, theme=theme, previous_sections=previous_sections)
+    if _should_regenerate_punchline(sentence, previous_sections, past_punchlines=past_punchlines):
+        sentence = _generate_new_punchline(
+            question=question, theme=theme, previous_sections=previous_sections, past_punchlines=past_punchlines
+        )
 
     return f"*{sentence}*"
+
+
+def _extract_past_punchlines(history_messages: list[ConversationMessage] | None) -> list[str]:
+    if not history_messages:
+        return []
+    past_punchlines = []
+    # iterate backwards to get the most recent ones
+    for msg in reversed(history_messages):
+        if msg.role == "assistant":
+            parts = msg.content.split("Closing Line (Punchline)")
+            if len(parts) > 1:
+                pl = _clean_punchline(parts[-1])
+                if pl:
+                    past_punchlines.append(pl)
+        if len(past_punchlines) >= 5:
+            break
+    return past_punchlines
 
 
 def _normalize_repetitive_context_phrase(text: str, *, question: str) -> str:
@@ -1206,7 +1242,9 @@ def _derive_problem_clause(question: str) -> str:
     return "attachment and outcome-fear disturb clear action in the present moment."
 
 
-def _should_regenerate_punchline(sentence: str, previous_sections: list[str]) -> bool:
+def _should_regenerate_punchline(
+    sentence: str, previous_sections: list[str], past_punchlines: list[str] | None = None
+) -> bool:
     if not sentence:
         return True
     lowered = sentence.lower().strip().rstrip(".!?")
@@ -1221,6 +1259,33 @@ def _should_regenerate_punchline(sentence: str, previous_sections: list[str]) ->
         return True
     if _punchline_repeats_previous(sentence, previous_sections):
         return True
+    
+    if past_punchlines:
+        for past_pl in past_punchlines:
+            if _is_too_similar(sentence, past_pl):
+                return True
+                
+    return False
+
+def _is_too_similar(sentence1: str, sentence2: str) -> bool:
+    s1_words = [word for word in re.findall(r"[a-z]+", _normalize_compare_text(sentence1)) if len(word) > 2]
+    s2_words = [word for word in re.findall(r"[a-z]+", _normalize_compare_text(sentence2)) if len(word) > 2]
+    if not s1_words or not s2_words:
+        return False
+        
+    s1_set = set(s1_words)
+    s2_set = set(s2_words)
+    overlap = len(s1_set & s2_set)
+    # If 50% of the words are the same, reject
+    if overlap >= max(3, int(min(len(s1_set), len(s2_set)) * 0.5)):
+        return True
+        
+    # Check bigram overlap
+    s1_bigrams = {f"{s1_words[i]} {s1_words[i+1]}" for i in range(len(s1_words)-1)}
+    s2_bigrams = {f"{s2_words[i]} {s2_words[i+1]}" for i in range(len(s2_words)-1)}
+    if len(s1_bigrams & s2_bigrams) >= 2:
+        return True
+        
     return False
 
 
@@ -1286,7 +1351,9 @@ def _normalize_compare_text(text: str) -> str:
     return " ".join(lowered.split())
 
 
-def _generate_new_punchline(*, question: str, theme: str | None, previous_sections: list[str]) -> str:
+def _generate_new_punchline(
+    *, question: str, theme: str | None, previous_sections: list[str], past_punchlines: list[str] | None = None
+) -> str:
     key = _punchline_theme_key(question=question, theme=theme)
     candidates = list(PUNCHLINE_LIBRARY.get(key, [])) + PUNCHLINE_LIBRARY["default"]
     seed = _stable_index(question, f"punchline:{key}")
@@ -1294,7 +1361,7 @@ def _generate_new_punchline(*, question: str, theme: str | None, previous_sectio
     for offset in range(len(candidates)):
         candidate = candidates[(seed + offset) % len(candidates)]
         cleaned = _clean_punchline(candidate)
-        if _should_regenerate_punchline(cleaned, previous_sections):
+        if _should_regenerate_punchline(cleaned, previous_sections, past_punchlines=past_punchlines):
             continue
         return cleaned
 

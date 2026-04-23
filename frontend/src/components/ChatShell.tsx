@@ -584,7 +584,7 @@ export function ChatShell() {
           </AnimatePresence>
         </div>
 
-        <div className="sticky bottom-0 z-20 border-t border-border/70 bg-[linear-gradient(180deg,rgba(10,16,39,0.78),rgba(12,18,46,0.96))] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-6">
+        <div className="composer-area shrink-0 border-t border-border/70 bg-[linear-gradient(180deg,rgba(10,16,39,0.78),rgba(12,18,46,0.96))] px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-6">
           <p aria-live="polite" className="min-h-5 text-xs text-rose-200">
             {error}
           </p>
