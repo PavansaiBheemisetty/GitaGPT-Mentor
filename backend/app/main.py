@@ -31,19 +31,28 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     # ── Preload heavy resources at startup to eliminate cold-start latency ──
     logger.info("🔥 Preloading embeddings model...")
+    try:
+        from app.api.deps import get_embeddings_provider
+        get_embeddings_provider()
+        logger.info("✅ Embeddings model preloaded.")
+    except Exception as exc:
+        logger.warning(
+            "⚠️  Embeddings preload failed: %s. Resources will load lazily on first request.",
+            exc,
+        )
+
     logger.info("🔥 Preloading FAISS retriever...")
     try:
-        # get_chat_service() is @lru_cache — calling it here populates the
-        # singleton, which internally loads the HF embeddings model + FAISS
-        # index into memory.  Subsequent request-time calls return instantly.
-        from app.api.deps import get_chat_service
-        get_chat_service()
-        logger.info("✅ Startup preload complete.")
-    except Exception:
+        from app.api.deps import get_retriever
+        get_retriever()
+        logger.info("✅ FAISS retriever preloaded.")
+    except Exception as exc:
         logger.warning(
-            "⚠️  Startup preload skipped (index or model not available). "
-            "Resources will load lazily on first request."
+            "⚠️  FAISS retriever preload failed: %s. Resources will load lazily on first request.",
+            exc,
         )
+
+    logger.info("✅ Startup preload complete.")
 
     yield
 

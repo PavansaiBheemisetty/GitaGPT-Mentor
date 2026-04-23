@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 
 from fastapi import Header, HTTPException, status
@@ -6,6 +7,35 @@ from app.core.config import get_settings
 from app.services.auth_service import SupabaseAuthService
 from app.services.chat_repository import AuthUser, ChatRepository
 from app.services.chat_service import ChatService
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache
+def get_embeddings_provider():
+    """Preload embeddings model separately to reduce startup blocking."""
+    from app.rag.embeddings import create_embedding_provider
+    return create_embedding_provider(get_settings())
+
+
+@lru_cache
+def get_vector_store():
+    """Preload FAISS vector store separately to reduce startup blocking."""
+    from app.rag.vector_store import VectorStore
+    settings = get_settings()
+    store = VectorStore(settings.faiss_index_path, settings.faiss_metadata_path)
+    store.load()
+    return store
+
+
+@lru_cache
+def get_retriever():
+    """Preload retriever (depends on embeddings + vector store)."""
+    from app.rag.retriever import Retriever
+    settings = get_settings()
+    embeddings = get_embeddings_provider()
+    store = get_vector_store()
+    return Retriever(settings, embeddings, store)
 
 
 @lru_cache
