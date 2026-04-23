@@ -1,0 +1,21 @@
+{
+  "name": "GitaGPT — Divine Guidance",
+  "short_name": "GitaGPT",
+  "description": "A Krishna-inspired AI mentor grounded in Bhagavad Gita teachings to guide you through life, purpose, and inner conflict.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070d2a",
+  "theme_color": "#070d2a",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

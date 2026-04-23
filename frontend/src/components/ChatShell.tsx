@@ -135,6 +135,29 @@ export function ChatShell() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
+  useEffect(() => {
+    const defaultTitle = "GitaGPT — Divine Guidance";
+    if (isStreaming) {
+      document.title = "✨ Receiving Divine Guidance...";
+      return;
+    }
+
+    const latestUserQuestion = [...messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.content.trim())
+      ?.content.trim();
+
+    if (!latestUserQuestion) {
+      document.title = defaultTitle;
+      return;
+    }
+
+    const compact = latestUserQuestion.length > 68
+      ? `${latestUserQuestion.slice(0, 65).trimEnd()}...`
+      : latestUserQuestion;
+    document.title = `${compact} | GitaGPT`;
+  }, [isStreaming, messages]);
+
 
 
   async function ensureSession(): Promise<string> {
