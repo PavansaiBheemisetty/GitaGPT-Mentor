@@ -72,7 +72,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${cinzel.variable} h-full overflow-hidden font-[var(--font-body)]`}>
+      <body className={`${inter.variable} ${cinzel.variable} font-[var(--font-body)]`}>
         {children}
         <SpeedInsights />
         <Analytics />

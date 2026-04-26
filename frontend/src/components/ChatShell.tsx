@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
 import { Check, Edit2, LogOut, Menu, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
@@ -565,7 +566,7 @@ export function ChatShell() {
                 </Button>
               </div>
             </div>
-          </motion.aside>
+            </motion.aside>
         )}
       </AnimatePresence>
 
@@ -586,9 +587,25 @@ export function ChatShell() {
                 <Menu className="h-5 w-5" />
               </Button>
             )}
-            <div>
+            <div className="flex-1">
               <h2 className="text-xl font-semibold text-foreground sm:text-2xl font-[var(--font-heading)]">Divine Guidance</h2>
             </div>
+            <nav className="hidden items-center gap-1 sm:flex">
+              {[
+                { href: "/about", label: "About" },
+                { href: "/blog", label: "Blog" },
+                { href: "/legal", label: "Legal" },
+                { href: "/about#support", label: "Donate" },
+              ].map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground/80 transition hover:bg-accent/10 hover:text-accent"
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </nav>
           </div>
         </header>
 
